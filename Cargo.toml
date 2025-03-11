@@ -1,0 +1,13 @@
+[package]
+name = "rust-proxy"
+version = "0.1.0"
+edition = "2021"
+description = ""
+repository = ""
+readme = "README.MD"
+license = "MIT OR Apache-2.0"
+keywords = []
+
+[[bin]]
+name = ""
+path = "src/main.rs"
