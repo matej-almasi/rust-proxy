@@ -4,9 +4,18 @@
     "rust-analyzer.rustfmt.extraArgs": [
         "+nightly"
     ],
+    "rust-analyzer.cargo.extraEnv": {
+        "RUSTC_BOOTSTRAP": "1",
+    },
+    "rust-analyzer.cargo.targetDir": true,
     "cSpell.words": [
+        "Addrs",
+        "httpmock",
+        "rfind",
+        "rsplit",
         "rust-proxy",
         "serde",
-        "thiserror"
+        "thiserror",
+        "userinfo"
     ]
 }
