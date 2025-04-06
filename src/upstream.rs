@@ -78,13 +78,13 @@ mod test {
     use super::*;
 
     #[tokio::test]
-    async fn test_bind_to_valid_address() {
+    async fn bind_to_valid_address_works() {
         let address = "localhost:1500";
         Upstream::bind(address).await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_bind_to_garbage_address_fails() {
+    async fn bind_to_garbage_address_fails() {
         let address = "garbage";
         let upstream = Upstream::bind(address).await;
         assert!(upstream.is_err())

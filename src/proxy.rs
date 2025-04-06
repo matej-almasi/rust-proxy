@@ -53,7 +53,7 @@ mod test {
     use super::*;
 
     #[tokio::test]
-    async fn test_proxy_serves_proxied_content() {
+    async fn proxy_serves_proxied_content() {
         let test_address = "127.0.0.1:2000";
         let test_answer = "TEST RESPONSE";
 
