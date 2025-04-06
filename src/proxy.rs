@@ -112,20 +112,18 @@ impl Upstream {
 #[cfg(test)]
 mod test {
     use http_body_util::{BodyExt, Full};
-    use hyper::{body::Bytes, Method, Request};
+    use hyper::{body::Bytes, http, Method, Request};
 
     use super::*;
 
     #[tokio::test]
     async fn test_proxy_serves_proxied_content() {
-        let test_server = httpmock::MockServer::start();
+        let test_address = "127.0.0.1:2000";
+        let test_answer = "TEST RESPONSE";
 
-        test_server.mock(|when, then| {
-            when.method(Method::GET.as_str()).path("/test");
-            then.status(200).body("TEST RESPONSE");
-        });
+        let proxied_server = setup_proxied_server(test_answer);
 
-        let proxy = Proxy::bind("127.0.0.1:2000", test_server.address())
+        let proxy = Proxy::bind(test_address, proxied_server.address())
             .await
             .unwrap();
 
@@ -133,19 +131,38 @@ mod test {
             proxy.run().await;
         });
 
+        let response_text = make_simple_request(format!("http://{test_address}")).await;
+
+        assert_eq!(response_text, test_answer);
+    }
+
+    fn setup_proxied_server(response: &str) -> httpmock::MockServer {
+        let test_server = httpmock::MockServer::start();
+
+        test_server.mock(|when, then| {
+            when.method(Method::GET.as_str());
+            then.status(200).body(response);
+        });
+
+        test_server
+    }
+
+    async fn make_simple_request<T>(uri: T) -> String
+    where
+        T: TryInto<Uri>,
+        T::Error: Into<http::Error>,
+    {
         let test_client = Client::builder(TokioExecutor::new()).build_http::<Full<Bytes>>();
 
-        let test_request: Request<Full<Bytes>> = Request::builder()
+        let test_request = Request::builder()
             .method(Method::GET)
-            .uri("http://localhost:2000/test")
-            .body(Full::from("TEST"))
+            .uri(uri)
+            .body(Full::default())
             .unwrap();
 
         let response = test_client.request(test_request).await.unwrap();
 
         let response_bytes = response.collect().await.unwrap().to_bytes();
-        let response_text = String::from_utf8(response_bytes.into()).unwrap();
-
-        assert_eq!(response_text, "TEST RESPONSE");
+        String::from_utf8(response_bytes.into()).unwrap()
     }
 }
