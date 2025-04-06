@@ -1,13 +1,8 @@
-use std::{convert::Infallible, io, net::SocketAddr};
-
-use hyper::{
-    body::Incoming, http::uri, server::conn::http1, service::service_fn, Request, Response, Uri,
-};
-use hyper_util::{
-    client::legacy::{connect::HttpConnector, Client},
-    rt::{TokioExecutor, TokioIo},
-};
-use tokio::net::{lookup_host, TcpListener, ToSocketAddrs};
+use crate::upstream::Upstream;
+use hyper::{server::conn::http1, service::service_fn};
+use hyper_util::rt::TokioIo;
+use std::io;
+use tokio::net::{TcpListener, ToSocketAddrs};
 
 pub struct Proxy {
     listener: TcpListener,
@@ -49,70 +44,11 @@ impl Proxy {
     }
 }
 
-#[derive(Clone)]
-struct Upstream {
-    address: SocketAddr,
-    client: Client<HttpConnector, Incoming>,
-}
-
-impl Upstream {
-    async fn bind<A: ToSocketAddrs>(address: A) -> Result<Self, Infallible> {
-        let address = lookup_host(address).await.unwrap().next().unwrap();
-
-        let client = Client::builder(TokioExecutor::new())
-            .pool_idle_timeout(None)
-            .pool_max_idle_per_host(32)
-            // .http2_only(true)
-            // .http2_keep_alive_interval(Duration::from_secs(20))
-            // .http2_keep_alive_while_idle(true)
-            .build_http::<Incoming>();
-
-        Ok(Self { address, client })
-    }
-
-    async fn send_request(
-        &self,
-        mut request: Request<Incoming>,
-    ) -> Result<Response<Incoming>, Infallible> {
-        request = self.update_uri(request);
-
-        Ok(self.client.request(request).await.unwrap())
-    }
-
-    fn update_uri<B>(&self, mut request: Request<B>) -> Request<B> {
-        let mut uri_parts = request.uri().clone().into_parts();
-
-        let authority = uri_parts
-            .authority
-            .take()
-            .map(|auth| auth.to_string())
-            .unwrap_or_default();
-
-        let userinfo = authority
-            .rsplit_once('@')
-            .map(|(userinfo, _)| userinfo.to_owned())
-            .map(|userinfo| format!("{userinfo}@"))
-            .unwrap_or_default();
-
-        let new_authority = format!("{userinfo}{}:{}", self.address.ip(), self.address.port());
-
-        let new_authority = new_authority.parse().unwrap();
-
-        uri_parts.scheme.replace(uri::Scheme::HTTP);
-        uri_parts.authority.replace(new_authority);
-
-        let updated_uri = Uri::from_parts(uri_parts).unwrap();
-
-        *request.uri_mut() = updated_uri;
-
-        request
-    }
-}
-
 #[cfg(test)]
 mod test {
     use http_body_util::{BodyExt, Full};
-    use hyper::{body::Bytes, http, Method, Request};
+    use hyper::{body::Bytes, http, Method, Request, Uri};
+    use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 
     use super::*;
 
