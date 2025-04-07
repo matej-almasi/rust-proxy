@@ -1,5 +1,6 @@
 use crate::upstream::Upstream;
-use hyper::{server::conn::http1, service::service_fn};
+use http_body_util::BodyExt;
+use hyper::{body::Incoming, server::conn::http1, service::service_fn, Request};
 use hyper_util::rt::TokioIo;
 use std::io;
 use tokio::net::{TcpListener, ToSocketAddrs};
@@ -35,7 +36,11 @@ impl Proxy {
                 http1::Builder::new()
                     .serve_connection(
                         io,
-                        service_fn(|req| async { upstream.send_request(req).await }),
+                        service_fn(|req: Request<Incoming>| async {
+                            let (parts, body) = req.into_parts();
+                            let req = Request::from_parts(parts, body.boxed());
+                            upstream.send_request(req).await
+                        }),
                     )
                     .await
                     .unwrap();
@@ -49,6 +54,8 @@ mod test {
     use http_body_util::{BodyExt, Full};
     use hyper::{body::Bytes, http, Method, Request, Uri};
     use hyper_util::{client::legacy::Client, rt::TokioExecutor};
+
+    use crate::test_utils::setup_proxied_server;
 
     use super::*;
 
@@ -70,17 +77,6 @@ mod test {
         let response_text = make_simple_request(format!("http://{test_address}")).await;
 
         assert_eq!(response_text, test_answer);
-    }
-
-    fn setup_proxied_server(response: &str) -> httpmock::MockServer {
-        let test_server = httpmock::MockServer::start();
-
-        test_server.mock(|when, then| {
-            when.method(Method::GET.as_str());
-            then.status(200).body(response);
-        });
-
-        test_server
     }
 
     async fn make_simple_request<T>(uri: T) -> String

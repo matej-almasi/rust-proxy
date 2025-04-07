@@ -1,26 +1,37 @@
-use std::{
-    convert::Infallible,
-    io::{self, ErrorKind},
-    net::SocketAddr,
-};
+use std::net::SocketAddr;
 
-use hyper::{body::Incoming, http::uri, Request, Response, Uri};
+use http_body_util::combinators::BoxBody;
+use hyper::{
+    body::{Bytes, Incoming},
+    http::uri,
+    Request, Response, Uri,
+};
 use hyper_util::{
     client::legacy::{connect::HttpConnector, Client},
     rt::TokioExecutor,
 };
 use tokio::net::{lookup_host, ToSocketAddrs};
 
+use crate::error::{ErrorKind, ProxyError};
+
+type RequestBody = BoxBody<Bytes, hyper::Error>;
+
 #[derive(Clone)]
 pub struct Upstream {
     address: SocketAddr,
-    client: Client<HttpConnector, Incoming>,
+    client: Client<HttpConnector, RequestBody>,
 }
 
 impl Upstream {
-    pub async fn bind<A: ToSocketAddrs>(address: A) -> io::Result<Self> {
-        let Some(address) = lookup_host(address).await?.next() else {
-            return Err(io::Error::from(ErrorKind::NotFound));
+    pub async fn bind<A: ToSocketAddrs>(address: A) -> crate::Result<Self> {
+        let mut found_sockets = lookup_host(address).await.map_err(|src| {
+            let mut error = ProxyError::new(ErrorKind::UpstreamHostDNSResolutionError);
+            error.source(Box::new(src));
+            error
+        })?;
+
+        let Some(address) = found_sockets.next() else {
+            return Err(ProxyError::new(ErrorKind::UpstreamHostNotFound));
         };
 
         let client = Client::builder(TokioExecutor::new())
@@ -29,18 +40,21 @@ impl Upstream {
             // .http2_only(true)
             // .http2_keep_alive_interval(Duration::from_secs(20))
             // .http2_keep_alive_while_idle(true)
-            .build_http::<Incoming>();
+            .build_http::<RequestBody>();
 
         Ok(Self { address, client })
     }
 
     pub async fn send_request(
         &self,
-        mut request: Request<Incoming>,
-    ) -> Result<Response<Incoming>, Infallible> {
+        mut request: Request<RequestBody>,
+    ) -> crate::Result<Response<Incoming>> {
         request = self.update_uri(request);
 
-        Ok(self.client.request(request).await.unwrap())
+        self.client
+            .request(request)
+            .await
+            .map_err(|_| ProxyError::new(ErrorKind::UpstreamRequestFail))
     }
 
     fn update_uri<B>(&self, mut request: Request<B>) -> Request<B> {
@@ -75,6 +89,13 @@ impl Upstream {
 
 #[cfg(test)]
 mod test {
+    use std::error::Error;
+
+    use http_body_util::{BodyExt, Empty};
+    use hyper::Method;
+
+    use crate::test_utils::setup_proxied_server;
+
     use super::*;
 
     #[tokio::test]
@@ -88,5 +109,36 @@ mod test {
         let address = "garbage";
         let upstream = Upstream::bind(address).await;
         assert!(upstream.is_err())
+    }
+
+    #[tokio::test]
+    async fn send_request_works() -> Result<(), Box<dyn Error + Send + Sync>> {
+        let expected_response = "TEST RESPONSE";
+
+        let mock_server = setup_proxied_server(expected_response);
+
+        let upstream = Upstream::bind(mock_server.address()).await.unwrap();
+
+        let test_body = Empty::<Bytes>::new()
+            .map_err(|never| match never {})
+            .boxed();
+
+        let test_request = Request::builder()
+            .method(Method::GET)
+            .body(test_body)
+            .unwrap();
+
+        let response = upstream
+            .send_request(test_request)
+            .await?
+            .collect()
+            .await?
+            .to_bytes();
+
+        let response = String::from_utf8(response.to_vec())?;
+
+        assert_eq!(response, expected_response);
+
+        Ok(())
     }
 }
