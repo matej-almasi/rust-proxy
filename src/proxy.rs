@@ -23,7 +23,7 @@ impl Proxy {
             err
         })?;
 
-        let upstream = Upstream::bind(upstream_addr).await.unwrap();
+        let upstream = Upstream::bind(upstream_addr).await?;
 
         Ok(Self { listener, upstream })
     }
