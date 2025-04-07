@@ -38,19 +38,25 @@ impl Error for ProxyError {
 
 #[derive(Debug)]
 pub enum ErrorKind {
+    ListenerSocketError,
     UpstreamHostDNSResolutionError,
     UpstreamHostNotFound,
     UpstreamRequestFail,
 }
 
+use ErrorKind::*;
+
 impl std::fmt::Display for ErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ErrorKind::UpstreamHostDNSResolutionError => {
+            ListenerSocketError => {
+                write!(f, "Failed to listen on provided port.")
+            }
+            UpstreamHostDNSResolutionError => {
                 write!(f, "Failed to DNS resolve proxied resource.")
             }
-            ErrorKind::UpstreamRequestFail => write!(f, "Failed requesting proxied resource."),
-            ErrorKind::UpstreamHostNotFound => write!(f, "Proxied host not found."),
+            UpstreamRequestFail => write!(f, "Failed requesting proxied resource."),
+            UpstreamHostNotFound => write!(f, "Proxied host not found."),
         }
     }
 }

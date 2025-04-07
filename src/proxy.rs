@@ -1,9 +1,10 @@
-use crate::upstream::Upstream;
+use crate::{error::ErrorKind, upstream::Upstream};
 use http_body_util::BodyExt;
 use hyper::{body::Incoming, server::conn::http1, service::service_fn, Request};
 use hyper_util::rt::TokioIo;
-use std::io;
 use tokio::net::{TcpListener, ToSocketAddrs};
+
+use crate::ProxyError;
 
 pub struct Proxy {
     listener: TcpListener,
@@ -11,12 +12,16 @@ pub struct Proxy {
 }
 
 impl Proxy {
-    pub async fn bind<L, U>(listener_addr: L, upstream_addr: U) -> io::Result<Self>
+    pub async fn bind<L, U>(listener_addr: L, upstream_addr: U) -> crate::Result<Self>
     where
         L: ToSocketAddrs,
         U: ToSocketAddrs,
     {
-        let listener = TcpListener::bind(listener_addr).await?;
+        let listener = TcpListener::bind(listener_addr).await.map_err(|src| {
+            let mut err = ProxyError::new(ErrorKind::ListenerSocketError);
+            err.source(Box::new(src));
+            err
+        })?;
 
         let upstream = Upstream::bind(upstream_addr).await.unwrap();
 
