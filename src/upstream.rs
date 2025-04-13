@@ -24,13 +24,13 @@ pub struct Upstream {
 
 impl Upstream {
     pub async fn bind<A: ToSocketAddrs>(address: A) -> crate::Result<Self> {
-        let mut found_sockets = lookup_host(address).await.map_err(|src| {
+        let mut found_addresses = lookup_host(address).await.map_err(|src| {
             let mut error = ProxyError::new(ErrorKind::UpstreamHostDNSResolutionError);
             error.source(Box::new(src));
             error
         })?;
 
-        let Some(address) = found_sockets.next() else {
+        let Some(address) = found_addresses.next() else {
             return Err(ProxyError::new(ErrorKind::UpstreamHostNotFound));
         };
 
