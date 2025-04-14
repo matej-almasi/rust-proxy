@@ -1,31 +1,24 @@
-use crate::{error::ErrorKind, upstream::Upstream};
+use crate::upstream::Upstream;
+use builder::ProxyBuilder;
 use http_body_util::BodyExt;
 use hyper::{body::Incoming, server::conn::http1, service::service_fn, Request};
 use hyper_util::rt::TokioIo;
-use tokio::net::{TcpListener, ToSocketAddrs};
+use tokio::net::TcpListener;
 
-use crate::ProxyError;
+pub mod logger;
+use logger::Logger;
 
-pub struct Proxy {
+pub mod builder;
+
+pub struct Proxy<L: Logger> {
     listener: TcpListener,
     upstream: Upstream,
+    _logger: L,
 }
 
-impl Proxy {
-    pub async fn bind<L, U>(listener_addr: L, upstream_addr: U) -> crate::Result<Self>
-    where
-        L: ToSocketAddrs,
-        U: ToSocketAddrs,
-    {
-        let listener = TcpListener::bind(listener_addr).await.map_err(|src| {
-            let mut err = ProxyError::new(ErrorKind::ListenerSocketError);
-            err.source(Box::new(src));
-            err
-        })?;
-
-        let upstream = Upstream::bind(upstream_addr).await?;
-
-        Ok(Self { listener, upstream })
+impl<L: Logger> Proxy<L> {
+    pub fn builder() -> builder::ProxyBuilder<L> {
+        ProxyBuilder::new()
     }
 
     pub async fn run(&self) {
@@ -64,6 +57,8 @@ mod test {
 
     use super::*;
 
+    use builder::ProxyBuilder;
+
     #[tokio::test]
     async fn proxy_serves_proxied_content() {
         let test_address = "127.0.0.1:2000";
@@ -71,7 +66,9 @@ mod test {
 
         let proxied_server = setup_proxied_server(test_answer);
 
-        let proxy = Proxy::bind(test_address, proxied_server.address())
+        let proxy = ProxyBuilder::new()
+            .logger(logger::StubLogger)
+            .bind(test_address, proxied_server.address())
             .await
             .unwrap();
 

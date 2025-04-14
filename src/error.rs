@@ -38,6 +38,7 @@ impl Error for ProxyError {
 
 #[derive(Debug)]
 pub enum ErrorKind {
+    ProxyBuilderError,
     ListenerSocketError,
     UpstreamHostDNSResolutionError,
     UpstreamHostNotFound,
@@ -49,6 +50,7 @@ use ErrorKind::*;
 impl std::fmt::Display for ErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            ProxyBuilderError => write!(f, "Failed to build Proxy"),
             ListenerSocketError => {
                 write!(f, "Failed to listen on provided port.")
             }

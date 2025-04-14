@@ -10,6 +10,7 @@
     "rust-analyzer.cargo.targetDir": true,
     "cSpell.words": [
         "Addrs",
+        "chrono",
         "httpmock",
         "rfind",
         "rsplit",
