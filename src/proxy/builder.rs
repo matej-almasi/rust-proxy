@@ -1,6 +1,7 @@
+use anyhow::anyhow;
 use tokio::net::{TcpListener, ToSocketAddrs};
 
-use crate::{error::ErrorKind, upstream::Upstream, ProxyError};
+use crate::upstream::Upstream;
 
 use super::{logger::Logger, Proxy};
 
@@ -23,20 +24,16 @@ impl<L: Logger> ProxyBuilder<L> {
         }
     }
 
-    pub async fn bind<A, B>(self, listener_addr: A, upstream_addr: B) -> crate::Result<Proxy<L>>
+    pub async fn bind<A, B>(self, listener_addr: A, upstream_addr: B) -> anyhow::Result<Proxy<L>>
     where
         A: ToSocketAddrs,
         B: ToSocketAddrs,
     {
         let Some(logger) = self.logger else {
-            return Err(ProxyError::new(ErrorKind::ProxyBuilderError));
+            return Err(anyhow!("Missing logger for Proxy."));
         };
 
-        let listener = TcpListener::bind(listener_addr).await.map_err(|src| {
-            let mut err = ProxyError::new(ErrorKind::ListenerSocketError);
-            err.source(Box::new(src));
-            err
-        })?;
+        let listener = TcpListener::bind(listener_addr).await?;
 
         let upstream = Upstream::bind(upstream_addr).await?;
 

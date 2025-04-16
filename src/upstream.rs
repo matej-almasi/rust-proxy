@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+use anyhow::{anyhow, Context};
 use http_body_util::combinators::BoxBody;
 use hyper::{
     body::{Bytes, Incoming},
@@ -12,8 +13,6 @@ use hyper_util::{
 };
 use tokio::net::{lookup_host, ToSocketAddrs};
 
-use crate::error::{ErrorKind, ProxyError};
-
 type RequestBody = BoxBody<Bytes, hyper::Error>;
 
 #[derive(Clone)]
@@ -23,15 +22,13 @@ pub struct Upstream {
 }
 
 impl Upstream {
-    pub async fn bind<A: ToSocketAddrs>(address: A) -> crate::Result<Self> {
-        let mut found_addresses = lookup_host(address).await.map_err(|src| {
-            let mut error = ProxyError::new(ErrorKind::UpstreamHostDNSResolutionError);
-            error.source(Box::new(src));
-            error
-        })?;
+    pub async fn bind<A: ToSocketAddrs>(address: A) -> anyhow::Result<Self> {
+        let mut found_addresses = lookup_host(address)
+            .await
+            .context("Failed to DNS resolve upstream server.")?;
 
         let Some(address) = found_addresses.next() else {
-            return Err(ProxyError::new(ErrorKind::UpstreamHostNotFound));
+            return Err(anyhow!("Upstream server not found."));
         };
 
         let client = Client::builder(TokioExecutor::new())
@@ -48,13 +45,13 @@ impl Upstream {
     pub async fn send_request(
         &self,
         mut request: Request<RequestBody>,
-    ) -> crate::Result<Response<Incoming>> {
+    ) -> anyhow::Result<Response<Incoming>> {
         request = self.update_uri(request);
 
         self.client
             .request(request)
             .await
-            .map_err(|_| ProxyError::new(ErrorKind::UpstreamRequestFail))
+            .context("Failed passing request to upstream.")
     }
 
     fn update_uri<B>(&self, mut request: Request<B>) -> Request<B> {

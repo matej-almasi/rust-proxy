@@ -4,4 +4,4 @@
 - [ ] caching
 - [ ] logging
 - [ ] http2 support
-- [ ] thiserror
+- [x] ~~thiserror~~ anyhow
