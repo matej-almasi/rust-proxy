@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use crate::upstream::Upstream;
 use builder::ProxyBuilder;
 use http_body_util::BodyExt;
@@ -10,14 +12,16 @@ use logger::Logger;
 
 pub mod builder;
 
-pub struct Proxy<L: Logger> {
+type BoxSendLogger = Box<dyn Logger + Send>;
+
+pub struct Proxy {
     listener: TcpListener,
     upstream: Upstream,
-    _logger: L,
+    logger: Arc<Mutex<BoxSendLogger>>,
 }
 
-impl<L: Logger> Proxy<L> {
-    pub fn builder() -> builder::ProxyBuilder<L> {
+impl Proxy {
+    pub fn builder() -> builder::ProxyBuilder {
         ProxyBuilder::new()
     }
 
@@ -30,18 +34,23 @@ impl<L: Logger> Proxy<L> {
 
             let upstream = self.upstream.clone();
 
+            let logger = self.logger.clone();
+
             tokio::spawn(async move {
-                http1::Builder::new()
-                    .serve_connection(
-                        io,
-                        service_fn(|req: Request<Incoming>| async {
-                            let (parts, body) = req.into_parts();
-                            let req = Request::from_parts(parts, body.boxed());
-                            upstream.send_request(req).await
-                        }),
-                    )
-                    .await
-                    .unwrap();
+                let conn = http1::Builder::new().serve_connection(
+                    io,
+                    service_fn(|req: Request<Incoming>| async {
+                        let (parts, body) = req.into_parts();
+                        let req = Request::from_parts(parts, body.boxed());
+                        upstream.send_request(req).await
+                    }),
+                );
+                if let Err(e) = conn.await {
+                    logger
+                        .lock()
+                        .unwrap()
+                        .critical(&format!("Failed serving connection: {e}"));
+                };
             });
         }
     }
@@ -67,7 +76,7 @@ mod test {
         let proxied_server = setup_proxied_server(test_answer);
 
         let proxy = ProxyBuilder::new()
-            .logger(logger::StubLogger)
+            .logger(Box::new(logger::StubLogger))
             .bind(test_address, proxied_server.address())
             .await
             .unwrap();

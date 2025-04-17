@@ -1,6 +1,6 @@
 # TODO
 
-- [ ] remove all the 'unwrap's
+- [x] remove all the 'unwrap's
 - [ ] caching
 - [ ] logging
 - [ ] http2 support

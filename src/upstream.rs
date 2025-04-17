@@ -46,7 +46,9 @@ impl Upstream {
         &self,
         mut request: Request<RequestBody>,
     ) -> anyhow::Result<Response<Incoming>> {
-        request = self.update_uri(request);
+        request = self
+            .update_uri(request)
+            .context("Failed constructing URI for request.")?;
 
         self.client
             .request(request)
@@ -54,7 +56,7 @@ impl Upstream {
             .context("Failed passing request to upstream.")
     }
 
-    fn update_uri<B>(&self, mut request: Request<B>) -> Request<B> {
+    fn update_uri<B>(&self, mut request: Request<B>) -> anyhow::Result<Request<B>> {
         let mut uri_parts = request.uri().clone().into_parts();
 
         let authority = uri_parts
@@ -71,16 +73,24 @@ impl Upstream {
 
         let new_authority = format!("{userinfo}{}:{}", self.address.ip(), self.address.port());
 
-        let new_authority = new_authority.parse().unwrap();
+        // since we have full control over the new authority and we know all
+        // the parts to be correct, this should be always Ok(...), but in case
+        // it isn't, we don't want to expose `userinfo` to the caller as it may
+        // contain sensitive data
+        let new_authority = new_authority
+            .parse()
+            .map_err(|_| anyhow!("Failed parsing new authority."))?;
 
         uri_parts.scheme.replace(uri::Scheme::HTTP);
         uri_parts.authority.replace(new_authority);
 
-        let updated_uri = Uri::from_parts(uri_parts).unwrap();
+        // the same note as with `new_authority` above applies here too
+        let updated_uri =
+            Uri::from_parts(uri_parts).map_err(|_| anyhow!("Failed constructing new URI."))?;
 
         *request.uri_mut() = updated_uri;
 
-        request
+        Ok(request)
     }
 }
 

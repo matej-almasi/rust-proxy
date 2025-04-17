@@ -1,10 +1,12 @@
-use rust_proxy::{logging, proxy::logger::Severity, Proxy};
+use rust_proxy::{logging::ConsoleLogger, proxy::logger::Severity, Proxy};
 
 #[tokio::main]
 async fn main() {
+    let logger = Box::new(ConsoleLogger::with_severity(Severity::Debug));
+
     let _ = Proxy::builder()
-        .logger(logging::ConsoleLogger::with_severity(Severity::Debug))
+        .logger(logger)
         .bind("some", "addr")
         .await
-        .unwrap();
+        .expect("Failed to build proxy.");
 }
