@@ -5,3 +5,4 @@
 - [ ] logging
 - [ ] http2 support
 - [x] ~~thiserror~~ anyhow
+- [ ] graceful shutdown
