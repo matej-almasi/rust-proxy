@@ -1,23 +1,27 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use crate::upstream::Upstream;
-use builder::ProxyBuilder;
 use http_body_util::BodyExt;
 use hyper::{body::Incoming, server::conn::http1, service::service_fn, Request};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
+use tower::ServiceBuilder;
 
-pub mod logger;
-use logger::Logger;
+use crate::upstream::Upstream;
 
 pub mod builder;
+mod log_service;
+pub mod logger;
 
-type BoxSendLogger = Box<dyn Logger + Send>;
+use builder::ProxyBuilder;
+use log_service::LogService;
+use logger::Logger;
+
+type BoxSendLogger = Box<dyn Logger + Send + Sync>;
 
 pub struct Proxy {
     listener: TcpListener,
     upstream: Upstream,
-    logger: Arc<Mutex<BoxSendLogger>>,
+    logger: BoxSendLogger,
 }
 
 impl Proxy {
@@ -25,7 +29,9 @@ impl Proxy {
         ProxyBuilder::new()
     }
 
-    pub async fn run(&self) {
+    pub async fn run(self) {
+        let logger: Arc<dyn Logger + Send + Sync> = Arc::from(self.logger);
+
         loop {
             let Ok((stream, _)) = self.listener.accept().await else {
                 continue;
@@ -34,22 +40,21 @@ impl Proxy {
 
             let upstream = self.upstream.clone();
 
-            let logger = self.logger.clone();
+            let logger = logger.clone();
 
             tokio::spawn(async move {
-                let conn = http1::Builder::new().serve_connection(
-                    io,
-                    service_fn(|req: Request<Incoming>| async {
-                        let (parts, body) = req.into_parts();
-                        let req = Request::from_parts(parts, body.boxed());
-                        upstream.send_request(req).await
-                    }),
-                );
-                if let Err(e) = conn.await {
-                    logger
-                        .lock()
-                        .unwrap()
-                        .critical(&format!("Failed serving connection: {e}"));
+                let svc = service_fn(|req: Request<Incoming>| async {
+                    let (parts, body) = req.into_parts();
+                    let req = Request::from_parts(parts, body.boxed());
+                    upstream.send_request(req).await
+                });
+
+                let svc = ServiceBuilder::new()
+                    .layer_fn(|service| LogService::new(service, logger.clone()))
+                    .service(svc);
+
+                if let Err(e) = http1::Builder::new().serve_connection(io, svc).await {
+                    logger.critical(&format!("Failed serving connection: {e}"));
                 };
             });
         }
@@ -58,15 +63,13 @@ impl Proxy {
 
 #[cfg(test)]
 mod test {
+    use builder::ProxyBuilder;
     use http_body_util::{BodyExt, Full};
     use hyper::{body::Bytes, http, Method, Request, Uri};
     use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 
-    use crate::test_utils::setup_proxied_server;
-
     use super::*;
-
-    use builder::ProxyBuilder;
+    use crate::test_utils::setup_proxied_server;
 
     #[tokio::test]
     async fn proxy_serves_proxied_content() {

@@ -23,30 +23,30 @@ impl std::fmt::Display for Severity {
 
 pub trait Logger {
     /// Log a `message` with the given [`Severity`].
-    fn log(&mut self, message: &str, severity: Severity);
+    fn log(&self, message: &str, severity: Severity);
 
     /// Log a `message` with [`Severity::Debug`].
-    fn debug(&mut self, message: &str) {
+    fn debug(&self, message: &str) {
         self.log(message, Severity::Debug);
     }
 
     /// Log a `message` with [`Severity::Information`].
-    fn info(&mut self, message: &str) {
+    fn info(&self, message: &str) {
         self.log(message, Severity::Information);
     }
 
     /// Log a `message` with [`Severity::Warning`].
-    fn warn(&mut self, message: &str) {
+    fn warn(&self, message: &str) {
         self.log(message, Severity::Warning);
     }
 
     /// Log a `message` with [`Severity::Error`].
-    fn error(&mut self, message: &str) {
+    fn error(&self, message: &str) {
         self.log(message, Severity::Error);
     }
 
     /// Log a `message` with [`Severity::Critical`].
-    fn critical(&mut self, message: &str) {
+    fn critical(&self, message: &str) {
         self.log(message, Severity::Critical);
     }
 }
@@ -54,5 +54,5 @@ pub trait Logger {
 pub struct StubLogger;
 
 impl Logger for StubLogger {
-    fn log(&mut self, _message: &str, _severity: Severity) {}
+    fn log(&self, _message: &str, _severity: Severity) {}
 }

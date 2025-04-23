@@ -1,5 +1,3 @@
-use std::sync::{Arc, Mutex};
-
 use anyhow::anyhow;
 use tokio::net::{TcpListener, ToSocketAddrs};
 
@@ -35,8 +33,6 @@ impl ProxyBuilder {
         let Some(logger) = self.logger else {
             return Err(anyhow!("Missing logger for Proxy."));
         };
-
-        let logger = Arc::new(Mutex::new(logger));
 
         Ok(Proxy {
             listener,
