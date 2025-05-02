@@ -10,7 +10,7 @@ impl ConsoleLogger {
 }
 
 impl Logger for ConsoleLogger {
-    fn log(&mut self, message: &str, severity: Severity) {
+    fn log(&self, message: &str, severity: Severity) {
         if severity < self.severity {
             return;
         }
