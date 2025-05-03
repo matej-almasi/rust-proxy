@@ -29,8 +29,12 @@ impl Proxy {
 
     pub async fn run(self) {
         loop {
-            let Ok((stream, client)) = self.listener.accept().await else {
-                continue;
+            let (stream, peer_addr) = match self.listener.accept().await {
+                Ok(val) => val,
+                Err(e) => {
+                    tracing::error!("Failed establishing connection: {e}");
+                    continue;
+                }
             };
 
             let io = TokioIo::new(stream);
@@ -43,7 +47,7 @@ impl Proxy {
                 });
 
                 let tracing = TraceLayer::new_for_http().on_request(()).on_response(
-                    |_: &_, _latency: Duration, _: &_| tracing::info!("{} -", client.ip()),
+                    |_: &_, _latency: Duration, _: &_| tracing::info!("{} -", peer_addr.ip()),
                 );
 
                 let svc = ServiceBuilder::new().layer(tracing).service(svc);
@@ -51,7 +55,7 @@ impl Proxy {
                 let svc = TowerToHyperService::new(svc);
 
                 if let Err(e) = http1::Builder::new().serve_connection(io, svc).await {
-                    eprintln!("Failed serving connection: {e}");
+                    tracing::error!("Failed serving peer {}: {e}", peer_addr.ip());
                 };
             });
         }
