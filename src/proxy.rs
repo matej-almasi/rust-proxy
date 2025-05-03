@@ -39,21 +39,21 @@ impl Proxy {
 
             let io = TokioIo::new(stream);
 
+            let svc = tower::service_fn(move |req| async move {
+                let req = redirect_request(req, self.proxied_addr)?;
+                let client = Client::builder(TokioExecutor::new()).build_http();
+                client.request(req).await.map_err(anyhow::Error::from)
+            });
+
+            let tracing = TraceLayer::new_for_http().on_request(()).on_response(
+                move |_: &_, _latency: Duration, _: &_| tracing::info!("{} -", peer_addr.ip()),
+            );
+
+            let svc = ServiceBuilder::new().layer(tracing).service(svc);
+
+            let svc = TowerToHyperService::new(svc);
+
             tokio::spawn(async move {
-                let svc = tower::service_fn(|req| async {
-                    let req = redirect_request(req, self.proxied_addr)?;
-                    let client = Client::builder(TokioExecutor::new()).build_http();
-                    client.request(req).await.map_err(anyhow::Error::from)
-                });
-
-                let tracing = TraceLayer::new_for_http().on_request(()).on_response(
-                    |_: &_, _latency: Duration, _: &_| tracing::info!("{} -", peer_addr.ip()),
-                );
-
-                let svc = ServiceBuilder::new().layer(tracing).service(svc);
-
-                let svc = TowerToHyperService::new(svc);
-
                 if let Err(e) = http1::Builder::new().serve_connection(io, svc).await {
                     tracing::error!("Failed serving peer {}: {e}", peer_addr.ip());
                 };
