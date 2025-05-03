@@ -35,16 +35,11 @@ impl Proxy {
 
             let io = TokioIo::new(stream);
 
-            let proxied_host = self.proxied_addr.clone();
-
             tokio::spawn(async move {
                 let svc = tower::service_fn(|req| async {
-                    let req = redirect_request(req, proxied_host)?;
+                    let req = redirect_request(req, self.proxied_addr)?;
                     let client = Client::builder(TokioExecutor::new()).build_http();
-                    client
-                        .request(req)
-                        .await
-                        .map_err(|e| anyhow::Error::from(e))
+                    client.request(req).await.map_err(anyhow::Error::from)
                 });
 
                 let tracing = TraceLayer::new_for_http().on_request(()).on_response(
