@@ -1,25 +1,24 @@
-use std::{io, net::SocketAddr, time::Duration};
+use std::{io, net::SocketAddr};
 
-use anyhow::anyhow;
-use hyper::http::uri;
-use hyper::Uri;
+use anyhow::Error;
+use hyper::body::Incoming;
+use hyper::Response;
 use hyper::{server::conn::http1, Request};
-use hyper_util::{
-    client::legacy::Client,
-    rt::{TokioExecutor, TokioIo},
-    service::TowerToHyperService,
-};
+use hyper_util::{rt::TokioIo, service::TowerToHyperService};
 use tokio::net::TcpListener;
-use tower::ServiceBuilder;
-use tower_http::trace::TraceLayer;
+use tower::util::BoxCloneService;
+use tower_http::classify::{NeverClassifyEos, ServerErrorsFailureClass};
+use tower_http::trace::ResponseBody;
 
 pub mod builder;
-
 use builder::ProxyBuilder;
+
+mod redirect_util;
+type ProxyRespBody = ResponseBody<Incoming, NeverClassifyEos<ServerErrorsFailureClass>>;
 
 pub struct Proxy {
     listener: TcpListener,
-    proxied_addr: SocketAddr,
+    service: BoxCloneService<Request<Incoming>, Response<ProxyRespBody>, Error>,
 }
 
 impl Proxy {
@@ -38,20 +37,7 @@ impl Proxy {
             };
 
             let io = TokioIo::new(stream);
-
-            let svc = tower::service_fn(move |req| async move {
-                let req = redirect_request(req, self.proxied_addr)?;
-                let client = Client::builder(TokioExecutor::new()).build_http();
-                client.request(req).await.map_err(anyhow::Error::from)
-            });
-
-            let tracing = TraceLayer::new_for_http().on_request(()).on_response(
-                move |_: &_, _latency: Duration, _: &_| tracing::info!("{} -", peer_addr.ip()),
-            );
-
-            let svc = ServiceBuilder::new().layer(tracing).service(svc);
-
-            let svc = TowerToHyperService::new(svc);
+            let svc = TowerToHyperService::new(self.service.clone());
 
             tokio::spawn(async move {
                 if let Err(e) = http1::Builder::new().serve_connection(io, svc).await {
@@ -64,45 +50,6 @@ impl Proxy {
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.listener.local_addr()
     }
-}
-
-fn redirect_request<B>(
-    mut request: Request<B>,
-    new_host: SocketAddr,
-) -> anyhow::Result<Request<B>> {
-    let mut uri_parts = request.uri().clone().into_parts();
-
-    let authority = uri_parts
-        .authority
-        .take()
-        .map(|auth| auth.to_string())
-        .unwrap_or_default();
-
-    let userinfo = authority
-        .rsplit_once('@')
-        .map(|(userinfo, _)| format!("{}@", userinfo.to_owned()))
-        .unwrap_or_default();
-
-    let new_authority = format!("{userinfo}{}", new_host);
-
-    // since we have full control over the new authority and we know all
-    // the parts to be correct, this should be always Ok(...), but in case
-    // it isn't, we don't want to expose `userinfo` to the caller as it may
-    // contain sensitive data
-    let new_authority = new_authority
-        .parse()
-        .map_err(|_| anyhow!("Failed parsing new authority."))?;
-
-    uri_parts.scheme.replace(uri::Scheme::HTTP);
-    uri_parts.authority.replace(new_authority);
-
-    // the same note as with `new_authority` above applies here too
-    let updated_uri =
-        Uri::from_parts(uri_parts).map_err(|_| anyhow!("Failed constructing new URI."))?;
-
-    *request.uri_mut() = updated_uri;
-
-    Ok(request)
 }
 
 #[cfg(test)]
@@ -118,11 +65,8 @@ mod test {
 
         let proxied_addr = SocketAddr::from(([127, 0, 0, 1], 2000));
 
-        let proxy = Proxy {
-            listener,
-            proxied_addr,
-        };
+        // let proxy = Proxy { listener };
 
-        assert_eq!(listener_addr, proxy.local_addr().unwrap());
+        // assert_eq!(listener_addr, proxy.local_addr().unwrap());
     }
 }

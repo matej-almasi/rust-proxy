@@ -1,7 +1,12 @@
-use anyhow::anyhow;
-use tokio::net::{lookup_host, TcpListener, ToSocketAddrs};
+use std::time;
 
-use super::Proxy;
+use anyhow::anyhow;
+use hyper_util::{client::legacy::Client, rt::TokioExecutor};
+use tokio::net::{lookup_host, TcpListener, ToSocketAddrs};
+use tower::ServiceExt;
+use tower_http::trace::TraceLayer;
+
+use super::{redirect_util::redirect_request, Proxy};
 
 #[derive(Default)]
 pub struct ProxyBuilder {}
@@ -23,9 +28,21 @@ impl ProxyBuilder {
             .next()
             .ok_or(anyhow!("Failed to lookup proxied host"))?;
 
-        Ok(Proxy {
-            listener,
-            proxied_addr,
-        })
+        let service = tower::service_fn(move |req| async move {
+            let req = redirect_request(req, proxied_addr)?;
+            let client = Client::builder(TokioExecutor::new()).build_http();
+            client.request(req).await.map_err(anyhow::Error::from)
+        });
+
+        let tracing = TraceLayer::new_for_http().on_request(()).on_response(
+            move |_: &_, _latency: time::Duration, _: &_| tracing::info!("{} -", "peer_addr.ip()"),
+        );
+
+        let service = tower::ServiceBuilder::new()
+            .layer(tracing)
+            .service(service)
+            .boxed_clone();
+
+        Ok(Proxy { listener, service })
     }
 }
