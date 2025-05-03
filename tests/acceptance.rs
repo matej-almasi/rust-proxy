@@ -7,15 +7,16 @@ use rust_proxy::{
 
 #[tokio::test]
 async fn proxy_serves_proxied_content() {
-    let test_address = "127.0.0.1:2000";
     let test_answer = "TEST RESPONSE";
 
     let proxied_server = setup_proxied_server(test_answer);
 
     let proxy = ProxyBuilder::new()
-        .bind(test_address, proxied_server.address())
+        .bind("127.0.0.1:0", proxied_server.address())
         .await
         .unwrap();
+
+    let test_address = proxy.local_addr().unwrap();
 
     tokio::spawn(async move {
         proxy.run().await;
@@ -42,15 +43,16 @@ async fn proxy_logs_are_captured() {
 
         tracing::subscriber::set_global_default(subscriber).unwrap();
 
-        let test_address = "127.0.0.1:2000";
         let test_answer = "TEST RESPONSE";
 
         let proxied_server = setup_proxied_server(test_answer);
 
         let proxy = ProxyBuilder::new()
-            .bind(test_address, proxied_server.address())
+            .bind("127.0.0.1:0", proxied_server.address())
             .await
             .unwrap();
+
+        let test_address = proxy.local_addr().unwrap();
 
         tokio::spawn(async move {
             proxy.run().await;

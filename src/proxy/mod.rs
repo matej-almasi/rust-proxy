@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{io, net::SocketAddr, time::Duration};
 
 use http_body_util::BodyExt;
 use hyper::{body::Incoming, server::conn::http1, Request};
@@ -53,7 +53,27 @@ impl Proxy {
             });
         }
     }
+
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.listener.local_addr()
+    }
 }
 
-// Unit tests for the Proxy::run function are omitted as they are essentially
-// identical to acceptance tests found in the `tests/acceptance.rs` file.
+#[cfg(test)]
+mod test {
+    use super::*;
+    // Unit tests for the Proxy::run function are omitted as they are essentially
+    // identical to acceptance tests found in the `tests/acceptance.rs` file.
+
+    #[tokio::test]
+    async fn local_addr_is_correct() {
+        let listener = TcpListener::bind("localhost:0").await.unwrap();
+        let listener_addr = listener.local_addr().unwrap();
+
+        let upstream = Upstream::bind("localhost:0").await.unwrap();
+
+        let proxy = Proxy { listener, upstream };
+
+        assert_eq!(listener_addr, proxy.local_addr().unwrap());
+    }
+}
