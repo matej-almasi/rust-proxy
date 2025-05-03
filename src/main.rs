@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use rust_proxy::Proxy;
 
 #[tokio::main]
@@ -10,8 +12,11 @@ async fn main() {
         .with_writer(writer)
         .init();
 
+    let self_address = SocketAddr::from(([127, 0, 0, 1], 5609));
+    let host_address = SocketAddr::from(([127, 0, 0, 1], 3456));
+
     let _ = Proxy::builder()
-        .bind("some", "addr")
+        .bind(self_address, host_address)
         .await
         .expect("Failed to build proxy.");
 }

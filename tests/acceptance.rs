@@ -48,7 +48,7 @@ async fn proxy_logs_are_captured() {
         let proxied_server = setup_proxied_server(test_answer);
 
         let proxy = ProxyBuilder::new()
-            .bind("127.0.0.1:0", proxied_server.address())
+            .bind("127.0.0.1:0", *proxied_server.address())
             .await
             .unwrap();
 
