@@ -1,15 +1,14 @@
 use std::io::{Read, Seek};
 
-use rust_proxy::{
-    proxy::builder::ProxyBuilder,
-    test_utils::{make_simple_request, setup_proxied_server},
-};
+mod utils;
+
+use rust_proxy::proxy::builder::ProxyBuilder;
 
 #[tokio::test]
 async fn proxy_serves_proxied_content() {
     let test_answer = "TEST RESPONSE";
 
-    let proxied_server = setup_proxied_server(test_answer);
+    let proxied_server = utils::setup_proxied_server(test_answer);
 
     let proxy = ProxyBuilder::new()
         .bind("127.0.0.1:0", proxied_server.address())
@@ -22,7 +21,7 @@ async fn proxy_serves_proxied_content() {
         proxy.run().await;
     });
 
-    let response_text = make_simple_request(format!("http://{test_address}")).await;
+    let response_text = utils::make_simple_request(format!("http://{test_address}")).await;
 
     assert_eq!(response_text, test_answer);
 }
@@ -45,7 +44,7 @@ async fn proxy_logs_are_captured() {
 
         let test_answer = "TEST RESPONSE";
 
-        let proxied_server = setup_proxied_server(test_answer);
+        let proxied_server = utils::setup_proxied_server(test_answer);
 
         let proxy = ProxyBuilder::new()
             .bind("127.0.0.1:0", *proxied_server.address())
@@ -58,7 +57,7 @@ async fn proxy_logs_are_captured() {
             proxy.run().await;
         });
 
-        make_simple_request(format!("http://{test_address}")).await;
+        utils::make_simple_request(format!("http://{test_address}")).await;
     }
 
     logfile_reader.seek(std::io::SeekFrom::Start(0)).unwrap();
