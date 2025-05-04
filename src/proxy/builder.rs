@@ -1,49 +1,48 @@
-use tokio::net::{TcpListener, ToSocketAddrs};
+use std::time;
 
-use crate::{error::ErrorKind, upstream::Upstream, ProxyError};
+use anyhow::anyhow;
+use hyper_util::{client::legacy::Client, rt::TokioExecutor};
+use tokio::net::{lookup_host, TcpListener, ToSocketAddrs};
+use tower::ServiceExt;
+use tower_http::trace::TraceLayer;
 
-use super::{logger::Logger, Proxy};
+use super::{redirect_util::redirect_request, Proxy};
 
 #[derive(Default)]
-pub struct ProxyBuilder<L>
-where
-    L: Logger,
-{
-    logger: Option<L>,
-}
+pub struct ProxyBuilder {}
 
-impl<L: Logger> ProxyBuilder<L> {
-    pub fn new() -> ProxyBuilder<L> {
-        ProxyBuilder { logger: None }
+impl ProxyBuilder {
+    pub fn new() -> ProxyBuilder {
+        ProxyBuilder {}
     }
 
-    pub fn logger(self, logger: L) -> ProxyBuilder<L> {
-        ProxyBuilder {
-            logger: Some(logger),
-        }
-    }
-
-    pub async fn bind<A, B>(self, listener_addr: A, upstream_addr: B) -> crate::Result<Proxy<L>>
+    pub async fn bind<A, B>(self, listener_addr: A, proxied_addr: B) -> anyhow::Result<Proxy>
     where
         A: ToSocketAddrs,
         B: ToSocketAddrs,
     {
-        let Some(logger) = self.logger else {
-            return Err(ProxyError::new(ErrorKind::ProxyBuilderError));
-        };
+        let listener = TcpListener::bind(listener_addr).await?;
 
-        let listener = TcpListener::bind(listener_addr).await.map_err(|src| {
-            let mut err = ProxyError::new(ErrorKind::ListenerSocketError);
-            err.source(Box::new(src));
-            err
-        })?;
+        let proxied_addr = lookup_host(proxied_addr)
+            .await?
+            .next()
+            .ok_or(anyhow!("Failed to lookup proxied host"))?;
 
-        let upstream = Upstream::bind(upstream_addr).await?;
+        let service = tower::service_fn(move |req| async move {
+            let req = redirect_request(req, proxied_addr)?;
+            let client = Client::builder(TokioExecutor::new()).build_http();
+            client.request(req).await.map_err(anyhow::Error::from)
+        });
 
-        Ok(Proxy {
-            listener,
-            upstream,
-            _logger: logger,
-        })
+        let tracing = TraceLayer::new_for_http().on_request(()).on_response(
+            move |_: &_, _latency: time::Duration, _: &_| tracing::info!("{} -", "peer_addr.ip()"),
+        );
+
+        let service = tower::ServiceBuilder::new()
+            .layer(tracing)
+            .service(service)
+            .boxed_clone();
+
+        Ok(Proxy { listener, service })
     }
 }

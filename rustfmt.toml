@@ -12,6 +12,7 @@ normalize_doc_attributes = true
 format_strings = true
 
 reorder_impl_items = true
+group_imports = "StdExternalCrate"
 
 space_after_colon = true
 spaces_around_ranges = false
