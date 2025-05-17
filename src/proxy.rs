@@ -2,11 +2,13 @@ use std::{io, net::SocketAddr};
 
 use anyhow::Error;
 use hyper::body::Incoming;
+use hyper::header::FORWARDED;
 use hyper::Response;
 use hyper::{server::conn::http1, Request};
 use hyper_util::{rt::TokioIo, service::TowerToHyperService};
 use tokio::net::TcpListener;
 use tower::util::BoxCloneService;
+use tower::Service;
 use tower_http::classify::{NeverClassifyEos, ServerErrorsFailureClass};
 use tower_http::trace::ResponseBody;
 
@@ -37,7 +39,12 @@ impl Proxy {
             };
 
             let io = TokioIo::new(stream);
-            let svc = TowerToHyperService::new(self.service.clone());
+            let mut service = self.service.clone();
+            let service = tower::service_fn(move |req: Request<Incoming>| async move {
+                req.headers_mut().get_mut(FORWARDED);
+                service.call(req)
+            });
+            let svc = TowerToHyperService::new(service);
 
             tokio::spawn(async move {
                 if let Err(e) = http1::Builder::new().serve_connection(io, svc).await {

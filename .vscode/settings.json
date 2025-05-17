@@ -12,6 +12,7 @@
         "Addrs",
         "chrono",
         "httpmock",
+        "logfile",
         "rfind",
         "rsplit",
         "rust-proxy",

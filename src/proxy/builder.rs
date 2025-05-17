@@ -35,7 +35,7 @@ impl ProxyBuilder {
         });
 
         let tracing = TraceLayer::new_for_http().on_request(()).on_response(
-            move |_: &_, _latency: time::Duration, _: &_| tracing::info!("{} -", "peer_addr.ip()"),
+            move |_: &_, _latency: time::Duration, _: &_| tracing::info!("{} -", peer_addr.ip()),
         );
 
         let service = tower::ServiceBuilder::new()

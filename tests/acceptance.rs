@@ -42,9 +42,7 @@ async fn proxy_logs_are_captured() {
 
         tracing::subscriber::set_global_default(subscriber).unwrap();
 
-        let test_answer = "TEST RESPONSE";
-
-        let proxied_server = utils::setup_proxied_server(test_answer);
+        let proxied_server = utils::setup_proxied_server("TEST RESPONSE");
 
         let proxy = ProxyBuilder::new()
             .bind("127.0.0.1:0", *proxied_server.address())
