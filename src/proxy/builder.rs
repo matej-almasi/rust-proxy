@@ -1,6 +1,7 @@
-use std::time;
+use std::{net::SocketAddr, time};
 
 use anyhow::anyhow;
+use hyper::Response;
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 use tokio::net::{lookup_host, TcpListener, ToSocketAddrs};
 use tower::ServiceExt;
@@ -31,11 +32,29 @@ impl ProxyBuilder {
         let service = tower::service_fn(move |req| async move {
             let req = redirect_request(req, proxied_addr)?;
             let client = Client::builder(TokioExecutor::new()).build_http();
-            client.request(req).await.map_err(anyhow::Error::from)
+            let extensions = req.extensions().to_owned();
+            client
+                .request(req)
+                .await
+                .map(|mut resp| {
+                    *resp.extensions_mut() = extensions;
+                    resp
+                })
+                .map_err(anyhow::Error::from)
         });
 
-        let tracing = TraceLayer::new_for_http().on_request(()).on_response(
-            move |_: &_, _latency: time::Duration, _: &_| tracing::info!("{} -", peer_addr.ip()),
+        let tracing = TraceLayer::new_for_http().on_response(
+            move |req: &Response<_>, _latency: time::Duration, _: &_| {
+                let peer_addr = req
+                    .extensions()
+                    .get::<SocketAddr>()
+                    .map(|addr| addr.ip().to_string())
+                    .unwrap_or_else(|| {
+                        tracing::warn!("Couldn't get peer address from response extension.");
+                        String::from("UNKNOWN")
+                    });
+                tracing::info!("{} -", peer_addr);
+            },
         );
 
         let service = tower::ServiceBuilder::new()

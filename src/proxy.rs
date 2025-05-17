@@ -1,15 +1,17 @@
+// use std::net::IpAddr;
 use std::{io, net::SocketAddr};
 
 use anyhow::Error;
 use hyper::body::Incoming;
-use hyper::header::FORWARDED;
+// use hyper::header::{self, HeaderValue};
 use hyper::Response;
 use hyper::{server::conn::http1, Request};
 use hyper_util::{rt::TokioIo, service::TowerToHyperService};
 use tokio::net::TcpListener;
 use tower::util::BoxCloneService;
-use tower::Service;
+use tower_http::add_extension::AddExtensionLayer;
 use tower_http::classify::{NeverClassifyEos, ServerErrorsFailureClass};
+// use tower_http::set_header::SetRequestHeaderLayer;
 use tower_http::trace::ResponseBody;
 
 pub mod builder;
@@ -38,16 +40,17 @@ impl Proxy {
                 }
             };
 
+            let service = tower::ServiceBuilder::new()
+                // .layer(self.set_forwarded_header_layer(&peer_addr.ip()).unwrap())
+                .layer(AddExtensionLayer::new(peer_addr))
+                .service(self.service.clone());
+
+            let service = TowerToHyperService::new(service);
+
             let io = TokioIo::new(stream);
-            let mut service = self.service.clone();
-            let service = tower::service_fn(move |req: Request<Incoming>| async move {
-                req.headers_mut().get_mut(FORWARDED);
-                service.call(req)
-            });
-            let svc = TowerToHyperService::new(service);
 
             tokio::spawn(async move {
-                if let Err(e) = http1::Builder::new().serve_connection(io, svc).await {
+                if let Err(e) = http1::Builder::new().serve_connection(io, service).await {
                     tracing::error!("Failed serving peer {}: {e}", peer_addr.ip());
                 };
             });
@@ -57,6 +60,25 @@ impl Proxy {
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.listener.local_addr()
     }
+
+    // fn set_forwarded_header_layer(
+    //     &self,
+    //     peer_addr: &IpAddr,
+    // ) -> Result<SetRequestHeaderLayer<HeaderValue>, anyhow::Error> {
+    //     let local_addr = match self.listener.local_addr() {
+    //         Ok(addr) => addr.ip().to_string(),
+    //         Err(e) => {
+    //             tracing::warn!("Local listener address not available: {e}");
+    //             String::from("unknown")
+    //         }
+    //     };
+
+    //     match HeaderValue::from_str(&format!("by={};for={}", local_addr,
+    // peer_addr)) {         Ok(val) =>
+    // Ok(SetRequestHeaderLayer::appending(header::FORWARDED, val)),
+    //         Err(e) => Err(anyhow::Error::from(e)),
+    //     }
+    // }
 }
 
 #[cfg(test)]
