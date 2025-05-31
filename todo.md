@@ -4,6 +4,6 @@
 - [ ] caching
 - [ ] logging
 - [ ] http2 support
-- [x] ~~thiserror~~ anyhow
+- [x] thiserror
 - [ ] graceful shutdown
 - [ ] configure tower layers

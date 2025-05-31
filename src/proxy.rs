@@ -1,36 +1,59 @@
-// use std::net::IpAddr;
+use std::time;
 use std::{io, net::SocketAddr};
 
-use anyhow::Error;
-use hyper::body::Incoming;
-// use hyper::header::{self, HeaderValue};
+use http::uri::{self, PathAndQuery};
+use http::{header, Extensions, HeaderValue, Uri};
+use hyper::body::{Body, Incoming};
 use hyper::Response;
 use hyper::{server::conn::http1, Request};
+use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::client::legacy::Client;
 use hyper_util::{rt::TokioIo, service::TowerToHyperService};
 use tokio::net::TcpListener;
-use tower::util::BoxCloneService;
 use tower_http::add_extension::AddExtensionLayer;
-use tower_http::classify::{NeverClassifyEos, ServerErrorsFailureClass};
-// use tower_http::set_header::SetRequestHeaderLayer;
-use tower_http::trace::ResponseBody;
+use tower_http::trace::TraceLayer;
 
 pub mod builder;
 use builder::ProxyBuilder;
 
-mod redirect_util;
-type ProxyRespBody = ResponseBody<Incoming, NeverClassifyEos<ServerErrorsFailureClass>>;
-
 pub struct Proxy {
     listener: TcpListener,
-    service: BoxCloneService<Request<Incoming>, Response<ProxyRespBody>, Error>,
+    client: Client<HttpConnector, Incoming>,
+    proxied_addr: SocketAddr,
 }
 
 impl Proxy {
     pub fn builder() -> builder::ProxyBuilder {
-        ProxyBuilder::new()
+        ProxyBuilder::default()
     }
 
     pub async fn run(self) {
+        let Ok(local_addr) = self.local_addr() else {
+            tracing::error!("Local listener address not available! Shutting down...");
+            panic!()
+        };
+
+        let tracing = TraceLayer::new_for_http().on_response(
+            move |resp: &Response<_>, _latency: time::Duration, _: &_| {
+                let peer_addr = extract_peer_addr_formatted(resp.extensions());
+                tracing::info!("{} -", peer_addr);
+            },
+        );
+
+        let service = tower::ServiceBuilder::new()
+            .map_request(move |mut req: Request<_>| {
+                let peer_addr = extract_peer_addr_formatted(req.extensions());
+                let header_entry = format!("by={};for={}", local_addr, peer_addr);
+                if let Ok(val) = HeaderValue::try_from(&header_entry) {
+                    req.headers_mut().append(header::FORWARDED, val);
+                } else {
+                    tracing::warn!("Couldn't convert to valid HTTP header: {header_entry}");
+                };
+                req
+            })
+            .layer(tracing)
+            .service_fn(move |req| pass_request(req, self.client.clone(), self.proxied_addr));
+
         loop {
             let (stream, peer_addr) = match self.listener.accept().await {
                 Ok(val) => val,
@@ -41,9 +64,8 @@ impl Proxy {
             };
 
             let service = tower::ServiceBuilder::new()
-                // .layer(self.set_forwarded_header_layer(&peer_addr.ip()).unwrap())
                 .layer(AddExtensionLayer::new(peer_addr))
-                .service(self.service.clone());
+                .service(service.clone());
 
             let service = TowerToHyperService::new(service);
 
@@ -60,25 +82,57 @@ impl Proxy {
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.listener.local_addr()
     }
+}
 
-    // fn set_forwarded_header_layer(
-    //     &self,
-    //     peer_addr: &IpAddr,
-    // ) -> Result<SetRequestHeaderLayer<HeaderValue>, anyhow::Error> {
-    //     let local_addr = match self.listener.local_addr() {
-    //         Ok(addr) => addr.ip().to_string(),
-    //         Err(e) => {
-    //             tracing::warn!("Local listener address not available: {e}");
-    //             String::from("unknown")
-    //         }
-    //     };
+fn extract_peer_addr_formatted(ext: &Extensions) -> String {
+    ext.get::<SocketAddr>()
+        .map(|addr| addr.ip().to_string())
+        .unwrap_or_else(|| {
+            tracing::warn!("Couldn't get peer address from response extension.");
+            String::from("UNKNOWN")
+        })
+}
 
-    //     match HeaderValue::from_str(&format!("by={};for={}", local_addr,
-    // peer_addr)) {         Ok(val) =>
-    // Ok(SetRequestHeaderLayer::appending(header::FORWARDED, val)),
-    //         Err(e) => Err(anyhow::Error::from(e)),
-    //     }
-    // }
+async fn pass_request<B>(
+    req: Request<B>,
+    client: Client<HttpConnector, B>,
+    host: SocketAddr,
+) -> crate::Result<Response<Incoming>>
+where
+    B: Body + Send + 'static + Unpin,
+    B::Data: Send,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    let req = redirect(req, host)?;
+
+    // Extensions don't automatically transfer from Req to Resp,
+    // we have to do it manually.
+    let extensions = req.extensions().to_owned();
+
+    let resp = client.request(req).await.map(|mut resp| {
+        *resp.extensions_mut() = extensions;
+        resp
+    });
+
+    Ok(resp?)
+}
+
+fn redirect<B>(mut req: Request<B>, new_host: SocketAddr) -> crate::Result<Request<B>> {
+    let p_and_q = req
+        .uri()
+        .path_and_query()
+        .cloned()
+        .unwrap_or(PathAndQuery::from_static("/"));
+
+    let uri = Uri::builder()
+        .scheme(uri::Scheme::HTTP)
+        .authority(new_host.to_string())
+        .path_and_query(p_and_q)
+        .build()?;
+
+    *req.uri_mut() = uri;
+
+    Ok(req)
 }
 
 #[cfg(test)]
