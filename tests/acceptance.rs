@@ -10,10 +10,10 @@ async fn proxy_serves_proxied_content() {
 
     let proxied_server = utils::setup_proxied_server(test_answer);
 
-    let proxy = ProxyBuilder::default()
-        .proxied_addr(*proxied_server.address())
+    let proxy = ProxyBuilder::new(*proxied_server.address())
         .bind(([127, 0, 0, 1], 0).into())
-        .await;
+        .await
+        .unwrap();
 
     let test_address = proxy.local_addr().unwrap();
 
@@ -44,10 +44,10 @@ async fn proxy_logs_are_captured() {
 
         let proxied_server = utils::setup_proxied_server("TEST RESPONSE");
 
-        let proxy = ProxyBuilder::default()
-            .proxied_addr(*proxied_server.address())
+        let proxy = ProxyBuilder::new(*proxied_server.address())
             .bind(([127, 0, 0, 1], 0).into())
-            .await;
+            .await
+            .unwrap();
 
         let test_address = proxy.local_addr().unwrap();
 

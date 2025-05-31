@@ -9,6 +9,9 @@ pub enum Error {
 
     #[error("Proxied Host Error")]
     ProxiedHostError(#[from] client::legacy::Error),
+
+    #[error("Socket Error")]
+    SocketError(#[from] std::io::Error),
 }
 
 pub type Result<T> = std::result::Result<T, crate::Error>;

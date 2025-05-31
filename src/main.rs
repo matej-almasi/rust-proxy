@@ -10,10 +10,10 @@ async fn main() {
     let args = env::args().collect::<Vec<_>>();
     let host_address = SocketAddr::from_str(&args[1]).unwrap();
 
-    let proxy = Proxy::builder()
-        .proxied_addr(host_address)
+    let proxy = Proxy::builder(host_address)
         .bind(([127, 0, 0, 1], 0).into())
-        .await;
+        .await
+        .unwrap();
 
     let test_address = proxy.local_addr().unwrap();
 

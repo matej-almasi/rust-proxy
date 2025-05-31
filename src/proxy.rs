@@ -23,8 +23,8 @@ pub struct Proxy {
 }
 
 impl Proxy {
-    pub fn builder() -> builder::ProxyBuilder {
-        ProxyBuilder::default()
+    pub fn builder(proxied_addr: SocketAddr) -> builder::ProxyBuilder {
+        ProxyBuilder::new(proxied_addr)
     }
 
     pub async fn run(self) {
