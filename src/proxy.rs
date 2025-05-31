@@ -33,25 +33,9 @@ impl Proxy {
             panic!()
         };
 
-        let tracing = TraceLayer::new_for_http().on_response(
-            move |resp: &Response<_>, _latency: time::Duration, _: &_| {
-                let peer_addr = extract_peer_addr_formatted(resp.extensions());
-                tracing::info!("{} -", peer_addr);
-            },
-        );
-
         let service = tower::ServiceBuilder::new()
-            .map_request(move |mut req: Request<_>| {
-                let peer_addr = extract_peer_addr_formatted(req.extensions());
-                let header_entry = format!("by={};for={}", local_addr, peer_addr);
-                if let Ok(val) = HeaderValue::try_from(&header_entry) {
-                    req.headers_mut().append(header::FORWARDED, val);
-                } else {
-                    tracing::warn!("Couldn't convert to valid HTTP header: {header_entry}");
-                };
-                req
-            })
-            .layer(tracing)
+            .map_request(move |req| update_redirected_header(req, local_addr))
+            .layer(TraceLayer::new_for_http().on_response(log_response))
             .service_fn(move |req| pass_request(req, self.client.clone(), self.proxied_addr));
 
         loop {
@@ -82,6 +66,26 @@ impl Proxy {
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.listener.local_addr()
     }
+}
+
+fn update_redirected_header<T>(req: Request<T>, local_addr: SocketAddr) -> Request<T> {
+    let peer_addr = extract_peer_addr_formatted(req.extensions());
+    let header_entry = format!("by={};for={}", local_addr, peer_addr);
+
+    let mut req = req;
+
+    if let Ok(val) = HeaderValue::try_from(&header_entry) {
+        req.headers_mut().append(header::FORWARDED, val);
+    } else {
+        tracing::warn!("Couldn't convert to valid HTTP header: {header_entry}");
+    };
+
+    req
+}
+
+fn log_response<T, U, V>(resp: &Response<T>, _: U, _: &V) {
+    let peer_addr = extract_peer_addr_formatted(resp.extensions());
+    tracing::info!("{} -", peer_addr);
 }
 
 fn extract_peer_addr_formatted(ext: &Extensions) -> String {
