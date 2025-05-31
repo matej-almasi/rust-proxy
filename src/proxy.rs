@@ -1,13 +1,9 @@
-use std::time;
 use std::{io, net::SocketAddr};
 
-use http::uri::{self, PathAndQuery};
-use http::{header, Extensions, HeaderValue, Uri};
-use hyper::body::{Body, Incoming};
+use http::{header, Extensions, HeaderValue};
+use hyper::body::Incoming;
 use hyper::Response;
 use hyper::{server::conn::http1, Request};
-use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::client::legacy::Client;
 use hyper_util::{rt::TokioIo, service::TowerToHyperService};
 use tokio::net::TcpListener;
 use tower_http::add_extension::AddExtensionLayer;
@@ -15,14 +11,14 @@ use tower_http::trace::TraceLayer;
 
 pub mod builder;
 use builder::ProxyBuilder;
+mod remote_host;
 
-pub struct Proxy {
+pub struct Proxy<B> {
     listener: TcpListener,
-    client: Client<HttpConnector, Incoming>,
-    proxied_addr: SocketAddr,
+    host: remote_host::RemoteHost<B>,
 }
 
-impl Proxy {
+impl Proxy<Incoming> {
     pub fn builder(proxied_addr: SocketAddr) -> builder::ProxyBuilder {
         ProxyBuilder::new(proxied_addr)
     }
@@ -36,7 +32,10 @@ impl Proxy {
         let service = tower::ServiceBuilder::new()
             .map_request(move |req| update_redirected_header(req, local_addr))
             .layer(TraceLayer::new_for_http().on_response(log_response))
-            .service_fn(move |req| pass_request(req, self.client.clone(), self.proxied_addr));
+            .service_fn(move |req| {
+                let host = self.host.clone();
+                async move { host.pass_request(req).await }
+            });
 
         loop {
             let (stream, peer_addr) = match self.listener.accept().await {
@@ -95,48 +94,6 @@ fn extract_peer_addr_formatted(ext: &Extensions) -> String {
             tracing::warn!("Couldn't get peer address from response extension.");
             String::from("UNKNOWN")
         })
-}
-
-async fn pass_request<B>(
-    req: Request<B>,
-    client: Client<HttpConnector, B>,
-    host: SocketAddr,
-) -> crate::Result<Response<Incoming>>
-where
-    B: Body + Send + 'static + Unpin,
-    B::Data: Send,
-    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-{
-    let req = redirect(req, host)?;
-
-    // Extensions don't automatically transfer from Req to Resp,
-    // we have to do it manually.
-    let extensions = req.extensions().to_owned();
-
-    let resp = client.request(req).await.map(|mut resp| {
-        *resp.extensions_mut() = extensions;
-        resp
-    });
-
-    Ok(resp?)
-}
-
-fn redirect<B>(mut req: Request<B>, new_host: SocketAddr) -> crate::Result<Request<B>> {
-    let p_and_q = req
-        .uri()
-        .path_and_query()
-        .cloned()
-        .unwrap_or(PathAndQuery::from_static("/"));
-
-    let uri = Uri::builder()
-        .scheme(uri::Scheme::HTTP)
-        .authority(new_host.to_string())
-        .path_and_query(p_and_q)
-        .build()?;
-
-    *req.uri_mut() = uri;
-
-    Ok(req)
 }
 
 #[cfg(test)]

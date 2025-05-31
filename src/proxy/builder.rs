@@ -1,9 +1,9 @@
 use std::net::SocketAddr;
 
-use hyper_util::{client::legacy::Client, rt::TokioExecutor};
+use hyper::body::Body;
 use tokio::net::TcpListener;
 
-use super::Proxy;
+use super::{remote_host, Proxy};
 
 pub struct ProxyBuilder {
     proxied_addr: SocketAddr,
@@ -14,17 +14,17 @@ impl ProxyBuilder {
         Self { proxied_addr }
     }
 
-    pub async fn bind(self, listener_addr: SocketAddr) -> crate::Result<Proxy> {
+    pub async fn bind<B>(self, listener_addr: SocketAddr) -> crate::Result<Proxy<B>>
+    where
+        B: Body + Send + 'static + Unpin,
+        B::Data: Send,
+        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
         let listener = TcpListener::bind(listener_addr).await?;
-
-        let client = Client::builder(TokioExecutor::new()).build_http();
-
-        let proxied_addr = self.proxied_addr;
 
         let proxy = Proxy {
             listener,
-            proxied_addr,
-            client,
+            host: remote_host::RemoteHost::new(self.proxied_addr),
         };
 
         Ok(proxy)
