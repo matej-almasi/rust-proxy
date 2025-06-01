@@ -102,7 +102,7 @@ fn log_response<T, U, V>(resp: &Response<T>, _: U, _: &V) {
 
 fn extract_peer_addr_formatted(ext: &Extensions) -> String {
     ext.get::<SocketAddr>()
-        .map(|addr| addr.ip().to_string())
+        .map(|addr| addr.to_string())
         .unwrap_or_else(|| {
             tracing::warn!("Couldn't get peer address from response extension.");
             String::from("UNKNOWN")
@@ -112,6 +112,8 @@ fn extract_peer_addr_formatted(ext: &Extensions) -> String {
 #[cfg(test)]
 mod test {
     use std::sync::{Arc, RwLock};
+
+    use regex::Regex;
 
     use super::*;
     use crate::test_utils;
@@ -148,11 +150,15 @@ mod test {
 
         let redirected_req = remote_host.received_req.write().unwrap().take().unwrap();
         let redirected_header = redirected_req.headers().get(header::FORWARDED);
-        assert!(redirected_header
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .starts_with(&format!("by={};for=", test_address)),);
+        let header_value = redirected_header.unwrap().to_str().unwrap();
+
+        let pat = Regex::new(&format!(r"^by={};for=127.0.0.1:\d{{1, 5}}", test_address)).unwrap();
+
+        assert!(
+            pat.is_match(header_value),
+            "Incorrect header: {:#?}",
+            header_value
+        );
     }
 
     #[derive(Debug, Clone, Default)]

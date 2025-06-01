@@ -38,3 +38,4 @@ http-body-util = { version = "0.1", optional = true }
 httpmock = "0.7.0"
 tempfile = "3.19.1"
 rust-proxy = { path = ".", features = ["test-utils"] }
+regex = "1.11.1"
