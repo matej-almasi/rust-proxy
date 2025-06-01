@@ -120,10 +120,25 @@ mod test {
         let listener = TcpListener::bind("localhost:0").await.unwrap();
         let listener_addr = listener.local_addr().unwrap();
 
-        let proxied_addr = SocketAddr::from(([127, 0, 0, 1], 2000));
+        let host = MockRemoteHost;
+        let proxy = Proxy { listener, host };
 
-        // let proxy = Proxy { listener };
+        assert_eq!(listener_addr, proxy.local_addr().unwrap());
+    }
 
-        // assert_eq!(listener_addr, proxy.local_addr().unwrap());
+    #[derive(Clone)]
+    struct MockRemoteHost;
+
+    #[async_trait]
+    impl RemoteHost for MockRemoteHost {
+        type Error = crate::Error;
+        type ResponseBody = http_body_util::Empty<bytes::Bytes>;
+
+        async fn pass_request(
+            &self,
+            _req: Request<Incoming>,
+        ) -> Result<Response<Self::ResponseBody>, Self::Error> {
+            Ok(Response::new(http_body_util::Empty::new()))
+        }
     }
 }

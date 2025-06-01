@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{convert::Infallible, fmt::Display};
 
 pub mod proxy;
 pub use proxy::Proxy;
@@ -23,3 +23,4 @@ pub trait ThreadSafeError: std::error::Error + Send + Sync + Display {}
 
 impl ThreadSafeError for hyper::Error {}
 impl ThreadSafeError for crate::Error {}
+impl ThreadSafeError for Infallible {}

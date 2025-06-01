@@ -45,7 +45,10 @@ impl crate::proxy::RemoteHost for HyperClientHost<Incoming> {
     type Error = crate::Error;
     type ResponseBody = Incoming;
 
-    async fn pass_request(&self, req: Request<Incoming>) -> crate::Result<Response<Incoming>> {
+    async fn pass_request(
+        &self,
+        req: Request<Incoming>,
+    ) -> crate::Result<Response<Self::ResponseBody>> {
         let req = redirect(req, self.address)?;
 
         // Extensions don't automatically transfer from Req to Resp,
