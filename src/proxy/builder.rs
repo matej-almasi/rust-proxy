@@ -1,27 +1,20 @@
 use std::net::SocketAddr;
 
-use hyper::body::Body;
 use tokio::net::TcpListener;
 
-use super::{hyper_client_host::HyperClientHost, Proxy};
-use crate::ThreadSafeError;
+use super::RemoteHost;
+use crate::Proxy;
 
-pub struct ProxyBuilder<B> {
-    remote_host: HyperClientHost<B>,
+pub struct ProxyBuilder<R> {
+    remote_host: R,
 }
 
-impl<B> ProxyBuilder<B>
-where
-    B: Body + Send,
-    B::Data: Send,
-    B::Error: ThreadSafeError,
-{
-    pub fn new(proxied_addr: SocketAddr) -> Self {
-        let remote_host = HyperClientHost::new(proxied_addr);
+impl<R: RemoteHost> ProxyBuilder<R> {
+    pub fn new(remote_host: R) -> Self {
         Self { remote_host }
     }
 
-    pub async fn bind(self, listener_addr: SocketAddr) -> crate::Result<Proxy<HyperClientHost<B>>> {
+    pub async fn bind(self, listener_addr: SocketAddr) -> crate::Result<Proxy<R>> {
         let listener = TcpListener::bind(listener_addr).await?;
 
         let proxy = Proxy {

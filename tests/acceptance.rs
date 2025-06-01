@@ -2,7 +2,7 @@ use std::io::{Read, Seek};
 
 mod utils;
 
-use rust_proxy::proxy::builder::ProxyBuilder;
+use rust_proxy::{hyper_client_host::HyperClientHost, Proxy};
 
 #[tokio::test]
 async fn proxy_serves_proxied_content() {
@@ -10,7 +10,9 @@ async fn proxy_serves_proxied_content() {
 
     let proxied_server = utils::setup_proxied_server(test_answer);
 
-    let proxy = ProxyBuilder::new(*proxied_server.address())
+    let remote_host = HyperClientHost::new(*proxied_server.address());
+
+    let proxy = Proxy::builder(remote_host)
         .bind(([127, 0, 0, 1], 0).into())
         .await
         .unwrap();
@@ -44,7 +46,9 @@ async fn proxy_logs_are_captured() {
 
         let proxied_server = utils::setup_proxied_server("TEST RESPONSE");
 
-        let proxy = ProxyBuilder::new(*proxied_server.address())
+        let remote_host = HyperClientHost::new(*proxied_server.address());
+
+        let proxy = Proxy::builder(remote_host)
             .bind(([127, 0, 0, 1], 0).into())
             .await
             .unwrap();

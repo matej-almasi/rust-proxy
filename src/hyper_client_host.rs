@@ -40,11 +40,8 @@ impl<B> Clone for HyperClientHost<B> {
     }
 }
 
-impl ThreadSafeError for crate::Error {}
-impl ThreadSafeError for hyper::Error {}
-
 #[async_trait]
-impl super::RemoteHost for HyperClientHost<Incoming> {
+impl crate::proxy::RemoteHost for HyperClientHost<Incoming> {
     type Error = crate::Error;
     type ResponseBody = Incoming;
 

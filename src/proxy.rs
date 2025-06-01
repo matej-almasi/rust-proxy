@@ -15,29 +15,16 @@ use crate::ThreadSafeError;
 pub mod builder;
 use builder::ProxyBuilder;
 
-mod hyper_client_host;
-use hyper_client_host::HyperClientHost;
-
 pub struct Proxy<R> {
     listener: TcpListener,
     host: R,
 }
 
-impl<B> Proxy<HyperClientHost<B>>
-where
-    B: Body + Send,
-    B::Data: Send,
-    B::Error: ThreadSafeError,
-{
-    pub fn builder(proxied_addr: SocketAddr) -> builder::ProxyBuilder<B> {
-        ProxyBuilder::new(proxied_addr)
+impl<R: RemoteHost> Proxy<R> {
+    pub fn builder(remote_host: R) -> ProxyBuilder<R> {
+        ProxyBuilder::new(remote_host)
     }
-}
 
-impl<R> Proxy<R>
-where
-    R: RemoteHost,
-{
     pub async fn run(self) {
         let Ok(local_addr) = self.local_addr() else {
             tracing::error!("Local listener address not available! Shutting down...");

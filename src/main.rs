@@ -1,6 +1,6 @@
 use std::{env, net::SocketAddr, str::FromStr};
 
-use rust_proxy::Proxy;
+use rust_proxy::{hyper_client_host::HyperClientHost, Proxy};
 use tracing_appender::non_blocking::WorkerGuard;
 
 #[tokio::main]
@@ -10,7 +10,9 @@ async fn main() {
     let args = env::args().collect::<Vec<_>>();
     let host_address = SocketAddr::from_str(&args[1]).unwrap();
 
-    let proxy = Proxy::builder(host_address)
+    let remote_host = HyperClientHost::new(host_address);
+
+    let proxy = Proxy::builder(remote_host)
         .bind(([127, 0, 0, 1], 0).into())
         .await
         .unwrap();
