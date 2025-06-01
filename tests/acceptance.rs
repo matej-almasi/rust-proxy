@@ -1,14 +1,13 @@
 use std::io::{Read, Seek};
 
-mod utils;
-
-use rust_proxy::{hyper_client_host::HyperClientHost, Proxy};
+use http::Method;
+use rust_proxy::{hyper_client_host::HyperClientHost, test_utils, Proxy};
 
 #[tokio::test]
 async fn proxy_serves_proxied_content() {
     let test_answer = "TEST RESPONSE";
 
-    let proxied_server = utils::setup_proxied_server(test_answer);
+    let proxied_server = setup_proxied_server(test_answer);
 
     let remote_host = HyperClientHost::new(*proxied_server.address());
 
@@ -23,7 +22,7 @@ async fn proxy_serves_proxied_content() {
         proxy.run().await;
     });
 
-    let response_text = utils::make_simple_request(format!("http://{test_address}")).await;
+    let response_text = test_utils::make_simple_request(format!("http://{test_address}")).await;
 
     assert_eq!(response_text, test_answer);
 }
@@ -44,7 +43,7 @@ async fn proxy_logs_are_captured() {
 
         tracing::subscriber::set_global_default(subscriber).unwrap();
 
-        let proxied_server = utils::setup_proxied_server("TEST RESPONSE");
+        let proxied_server = setup_proxied_server("TEST RESPONSE");
 
         let remote_host = HyperClientHost::new(*proxied_server.address());
 
@@ -59,7 +58,7 @@ async fn proxy_logs_are_captured() {
             proxy.run().await;
         });
 
-        utils::make_simple_request(format!("http://{test_address}")).await;
+        test_utils::make_simple_request(format!("http://{test_address}")).await;
     }
 
     logfile_reader.seek(std::io::SeekFrom::Start(0)).unwrap();
@@ -70,4 +69,15 @@ async fn proxy_logs_are_captured() {
     println!("{log_content}");
 
     assert!(log_content.contains("127.0.0.1 -"));
+}
+
+pub fn setup_proxied_server(response: &str) -> httpmock::MockServer {
+    let test_server = httpmock::MockServer::start();
+
+    test_server.mock(|when, then| {
+        when.method(Method::GET.as_str());
+        then.status(200).body(response);
+    });
+
+    test_server
 }

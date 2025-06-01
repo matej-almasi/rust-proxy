@@ -1325,6 +1325,7 @@ dependencies = [
  "httpmock",
  "hyper 1.6.0",
  "hyper-util",
+ "rust-proxy",
  "tempfile",
  "thiserror 2.0.12",
  "tokio",

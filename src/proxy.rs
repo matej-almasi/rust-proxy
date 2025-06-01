@@ -111,7 +111,10 @@ fn extract_peer_addr_formatted(ext: &Extensions) -> String {
 
 #[cfg(test)]
 mod test {
+    use std::sync::{Arc, RwLock};
+
     use super::*;
+    use crate::test_utils;
     // Unit tests for the Proxy::run function are omitted as they are essentially
     // identical to acceptance tests found in the `tests/acceptance.rs` file.
 
@@ -120,14 +123,42 @@ mod test {
         let listener = TcpListener::bind("localhost:0").await.unwrap();
         let listener_addr = listener.local_addr().unwrap();
 
-        let host = MockRemoteHost;
+        let host = MockRemoteHost::default();
         let proxy = Proxy { listener, host };
 
         assert_eq!(listener_addr, proxy.local_addr().unwrap());
     }
 
-    #[derive(Clone)]
-    struct MockRemoteHost;
+    #[tokio::test]
+    async fn redirected_header_is_inserted() {
+        let remote_host = MockRemoteHost::default();
+
+        let proxy = Proxy::builder(remote_host.clone())
+            .bind(([127, 0, 0, 1], 0).into())
+            .await
+            .unwrap();
+
+        let test_address = proxy.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            proxy.run().await;
+        });
+
+        test_utils::make_simple_request(format!("http://{test_address}")).await;
+
+        let redirected_req = remote_host.received_req.write().unwrap().take().unwrap();
+        let redirected_header = redirected_req.headers().get(header::FORWARDED);
+        assert!(redirected_header
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with(&format!("by={};for=", test_address)),);
+    }
+
+    #[derive(Debug, Clone, Default)]
+    struct MockRemoteHost {
+        received_req: Arc<RwLock<Option<Request<Incoming>>>>,
+    }
 
     #[async_trait]
     impl RemoteHost for MockRemoteHost {
@@ -136,8 +167,9 @@ mod test {
 
         async fn pass_request(
             &self,
-            _req: Request<Incoming>,
+            req: Request<Incoming>,
         ) -> Result<Response<Self::ResponseBody>, Self::Error> {
+            *self.received_req.write().unwrap() = Some(req);
             Ok(Response::new(http_body_util::Empty::new()))
         }
     }

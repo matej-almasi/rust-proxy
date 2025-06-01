@@ -12,6 +12,9 @@ keywords = []
 name = "rust-proxy"
 path = "src/main.rs"
 
+[features]
+test-utils = ["dep:http-body-util"]
+
 [dependencies]
 hyper = { version = "1", features = ["full"] }
 tokio = { version = "1", features = ["full"] }
@@ -29,8 +32,9 @@ bytes = "1.10.1"
 http = "1.3.1"
 thiserror = "2.0.12"
 async-trait = "0.1.88"
+http-body-util = { version = "0.1", optional = true }
 
 [dev-dependencies]
-http-body-util = "0.1"
 httpmock = "0.7.0"
 tempfile = "3.19.1"
+rust-proxy = { path = ".", features = ["test-utils"] }

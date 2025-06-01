@@ -1,23 +1,12 @@
-use http_body_util::{BodyExt, Full};
 use hyper::{body::Bytes, http, Method, Request, Uri};
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
-
-pub fn setup_proxied_server(response: &str) -> httpmock::MockServer {
-    let test_server = httpmock::MockServer::start();
-
-    test_server.mock(|when, then| {
-        when.method(Method::GET.as_str());
-        then.status(200).body(response);
-    });
-
-    test_server
-}
 
 pub async fn make_simple_request<T>(uri: T) -> String
 where
     T: TryInto<Uri>,
     T::Error: Into<http::Error>,
 {
+    use http_body_util::{BodyExt, Full};
     let test_client = Client::builder(TokioExecutor::new()).build_http::<Full<Bytes>>();
 
     let test_request = Request::builder()
