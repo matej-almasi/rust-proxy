@@ -1,7 +1,8 @@
 use std::{io, net::SocketAddr};
 
+use async_trait::async_trait;
 use http::{header, Extensions, HeaderValue};
-use hyper::body::Incoming;
+use hyper::body::{Body, Incoming};
 use hyper::Response;
 use hyper::{server::conn::http1, Request};
 use hyper_util::{rt::TokioIo, service::TowerToHyperService};
@@ -9,20 +10,34 @@ use tokio::net::TcpListener;
 use tower_http::add_extension::AddExtensionLayer;
 use tower_http::trace::TraceLayer;
 
+use crate::ThreadSafeError;
+
 pub mod builder;
 use builder::ProxyBuilder;
-mod remote_host;
 
-pub struct Proxy<B> {
+mod hyper_client_host;
+use hyper_client_host::HyperClientHost;
+
+pub struct Proxy<R> {
     listener: TcpListener,
-    host: remote_host::RemoteHost<B>,
+    host: R,
 }
 
-impl Proxy<Incoming> {
-    pub fn builder(proxied_addr: SocketAddr) -> builder::ProxyBuilder {
+impl<B> Proxy<HyperClientHost<B>>
+where
+    B: Body + Send,
+    B::Data: Send,
+    B::Error: ThreadSafeError,
+{
+    pub fn builder(proxied_addr: SocketAddr) -> builder::ProxyBuilder<B> {
         ProxyBuilder::new(proxied_addr)
     }
+}
 
+impl<R> Proxy<R>
+where
+    R: RemoteHost,
+{
     pub async fn run(self) {
         let Ok(local_addr) = self.local_addr() else {
             tracing::error!("Local listener address not available! Shutting down...");
@@ -65,6 +80,17 @@ impl Proxy<Incoming> {
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.listener.local_addr()
     }
+}
+
+#[async_trait]
+pub trait RemoteHost: Send + Clone + 'static {
+    type Error: ThreadSafeError;
+    type ResponseBody: Body<Data: Send, Error: ThreadSafeError> + Send;
+
+    async fn pass_request(
+        &self,
+        req: Request<Incoming>,
+    ) -> Result<Response<Self::ResponseBody>, Self::Error>;
 }
 
 fn update_redirected_header<T>(req: Request<T>, local_addr: SocketAddr) -> Request<T> {

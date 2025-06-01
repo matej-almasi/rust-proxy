@@ -1,6 +1,10 @@
+use std::fmt::Display;
 pub mod proxy;
+
 use hyper_util::client;
 pub use proxy::Proxy;
+
+pub trait ThreadSafeError: std::error::Error + Send + Sync + Display {}
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {

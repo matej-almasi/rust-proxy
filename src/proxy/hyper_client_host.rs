@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+use async_trait::async_trait;
 use http::uri;
 use http::uri::PathAndQuery;
 use http::Uri;
@@ -11,23 +12,43 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 
-pub(super) struct RemoteHost<B> {
+use crate::ThreadSafeError;
+
+pub struct HyperClientHost<B> {
     address: SocketAddr,
     client: Client<HttpConnector, B>,
 }
 
-impl<B> RemoteHost<B>
+impl<B> HyperClientHost<B>
 where
-    B: Body + Send + 'static + Unpin,
+    B: Body + Send,
     B::Data: Send,
-    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    B::Error: ThreadSafeError,
 {
     pub fn new(address: SocketAddr) -> Self {
         let client = Client::builder(TokioExecutor::new()).build_http();
         Self { address, client }
     }
+}
 
-    pub async fn pass_request(&self, req: Request<B>) -> crate::Result<Response<Incoming>> {
+impl<B> Clone for HyperClientHost<B> {
+    fn clone(&self) -> Self {
+        Self {
+            address: self.address,
+            client: self.client.clone(),
+        }
+    }
+}
+
+impl ThreadSafeError for crate::Error {}
+impl ThreadSafeError for hyper::Error {}
+
+#[async_trait]
+impl super::RemoteHost for HyperClientHost<Incoming> {
+    type Error = crate::Error;
+    type ResponseBody = Incoming;
+
+    async fn pass_request(&self, req: Request<Incoming>) -> crate::Result<Response<Incoming>> {
         let req = redirect(req, self.address)?;
 
         // Extensions don't automatically transfer from Req to Resp,
@@ -40,15 +61,6 @@ where
         });
 
         Ok(resp?)
-    }
-}
-
-impl<B> Clone for RemoteHost<B> {
-    fn clone(&self) -> Self {
-        Self {
-            address: self.address,
-            client: self.client.clone(),
-        }
     }
 }
 
