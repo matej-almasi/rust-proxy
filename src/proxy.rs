@@ -1,6 +1,7 @@
 use std::{io, net::SocketAddr};
 
 use async_trait::async_trait;
+use http::uri::PathAndQuery;
 use http::{header, Extensions, HeaderValue};
 use hyper::body::{Body, Incoming};
 use hyper::Response;
@@ -32,11 +33,19 @@ impl<R: RemoteHost> Proxy<R> {
         };
 
         let service = tower::ServiceBuilder::new()
+            .map_request(set_request_extensions)
             .map_request(move |req| update_redirected_header(req, local_addr))
             .layer(TraceLayer::new_for_http().on_response(log_response))
-            .service_fn(move |req| {
+            .service_fn(move |req: Request<_>| {
                 let host = self.host.clone();
-                async move { host.pass_request(req).await }
+                let extensions = req.extensions().to_owned();
+
+                async move {
+                    host.pass_request(req).await.map(|mut resp| {
+                        *resp.extensions_mut() = extensions;
+                        resp
+                    })
+                }
             });
 
         loop {
@@ -95,9 +104,19 @@ fn update_redirected_header<T>(req: Request<T>, local_addr: SocketAddr) -> Reque
     req
 }
 
+fn set_request_extensions<T>(mut req: Request<T>) -> Request<T> {
+    let method = req.method().to_owned();
+    let p_and_q = req.uri().path_and_query().map(|v| v.to_owned());
+    req.extensions_mut().insert(method);
+    req.extensions_mut().insert(p_and_q);
+    req
+}
+
 fn log_response<T, U, V>(resp: &Response<T>, _: U, _: &V) {
     let peer_addr = extract_peer_addr_formatted(resp.extensions());
-    tracing::info!("{} -", peer_addr);
+    let method = extract_method_formatted(resp.extensions());
+    let p_and_q = extract_p_and_q_formatted(resp.extensions());
+    tracing::info!("{peer_addr} {method} {p_and_q}");
 }
 
 fn extract_peer_addr_formatted(ext: &Extensions) -> String {
@@ -109,11 +128,35 @@ fn extract_peer_addr_formatted(ext: &Extensions) -> String {
         })
 }
 
+fn extract_method_formatted(ext: &Extensions) -> String {
+    ext.get::<http::Method>()
+        .map(|method| method.to_string())
+        .unwrap_or_else(|| {
+            tracing::warn!("Couldn't get http method for request.");
+            String::from("UNKNOWN")
+        })
+}
+
+fn extract_p_and_q_formatted(ext: &Extensions) -> String {
+    ext.get::<Option<PathAndQuery>>()
+        .map(|maybe_pq| {
+            maybe_pq
+                .as_ref()
+                .map(|pq| pq.to_string())
+                .unwrap_or_default()
+        })
+        .unwrap_or_else(|| {
+            tracing::warn!("Couldn't get http path and query for request.");
+            String::from("UNKNOWN")
+        })
+}
+
 #[cfg(test)]
 mod test {
     use std::sync::{Arc, RwLock};
 
     use regex::Regex;
+    use tracing_test::traced_test;
 
     use super::*;
     use crate::test_utils;
@@ -133,6 +176,59 @@ mod test {
 
     #[tokio::test]
     async fn redirected_header_is_inserted() {
+        let (remote_host, test_address) = setup_test_proxy().await;
+        test_utils::make_simple_request(format!("http://{test_address}")).await;
+
+        let redirected_req = remote_host.received_req.write().unwrap().take().unwrap();
+        let header_value = redirected_req
+            .headers()
+            .get(header::FORWARDED)
+            .unwrap()
+            .to_str()
+            .unwrap();
+
+        let pat = Regex::new(&format!(r"^by={};for=127.0.0.1:\d{{1, 5}}", test_address)).unwrap();
+
+        assert!(
+            pat.is_match(header_value),
+            "Incorrect header: {header_value}"
+        );
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn logs_contain_peer_address() {
+        let (_, test_address) = setup_test_proxy().await;
+        test_utils::make_simple_request(format!("http://{test_address}")).await;
+
+        logs_assert(|lines| {
+            check_log_contains(lines, "127.0.0.1:")?
+                .then_some(())
+                .ok_or(String::from("Peer address not found in log entry."))
+        });
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn logs_contain_method() {
+        let (_, test_address) = setup_test_proxy().await;
+        test_utils::make_simple_request(format!("http://{test_address}")).await;
+
+        assert!(logs_contain("GET"))
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn logs_contain_path_and_query() {
+        let test_p_and_q = "/some/path?johnny=12";
+
+        let (_, test_address) = setup_test_proxy().await;
+        test_utils::make_simple_request(format!("http://{test_address}{test_p_and_q}")).await;
+
+        assert!(logs_contain(test_p_and_q))
+    }
+
+    async fn setup_test_proxy() -> (MockRemoteHost, SocketAddr) {
         let remote_host = MockRemoteHost::default();
 
         let proxy = Proxy::builder(remote_host.clone())
@@ -142,23 +238,19 @@ mod test {
 
         let test_address = proxy.local_addr().unwrap();
 
-        tokio::spawn(async move {
+        tokio::spawn(async {
             proxy.run().await;
         });
 
-        test_utils::make_simple_request(format!("http://{test_address}")).await;
+        (remote_host, test_address)
+    }
 
-        let redirected_req = remote_host.received_req.write().unwrap().take().unwrap();
-        let redirected_header = redirected_req.headers().get(header::FORWARDED);
-        let header_value = redirected_header.unwrap().to_str().unwrap();
-
-        let pat = Regex::new(&format!(r"^by={};for=127.0.0.1:\d{{1, 5}}", test_address)).unwrap();
-
-        assert!(
-            pat.is_match(header_value),
-            "Incorrect header: {:#?}",
-            header_value
-        );
+    fn check_log_contains(lines: &[&str], val: &str) -> Result<bool, String> {
+        Ok(lines
+            .iter()
+            .find(|line| line.contains("INFO"))
+            .ok_or(String::from("No proxy logging line found in logs."))?
+            .contains(val))
     }
 
     #[derive(Debug, Clone, Default)]

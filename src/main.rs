@@ -31,6 +31,9 @@ fn setup_tracing_to_log_file() -> WorkerGuard {
     let subscriber = tracing_subscriber::fmt()
         .compact()
         .with_ansi(false)
+        .with_file(false)
+        .with_line_number(false)
+        .with_target(false)
         .with_writer(writer)
         .finish();
 

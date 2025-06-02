@@ -29,6 +29,24 @@ where
         let client = Client::builder(TokioExecutor::new()).build_http();
         Self { address, client }
     }
+
+    fn redirect(&self, mut req: Request<B>) -> crate::Result<Request<B>> {
+        let p_and_q = req
+            .uri()
+            .path_and_query()
+            .cloned()
+            .unwrap_or(PathAndQuery::from_static("/"));
+
+        let uri = Uri::builder()
+            .scheme(uri::Scheme::HTTP)
+            .authority(self.address.to_string())
+            .path_and_query(p_and_q)
+            .build()?;
+
+        *req.uri_mut() = uri;
+
+        Ok(req)
+    }
 }
 
 impl<B> Clone for HyperClientHost<B> {
@@ -49,35 +67,9 @@ impl crate::proxy::RemoteHost for HyperClientHost<Incoming> {
         &self,
         req: Request<Incoming>,
     ) -> crate::Result<Response<Self::ResponseBody>> {
-        let req = redirect(req, self.address)?;
-
-        // Extensions don't automatically transfer from Req to Resp,
-        // we have to do it manually.
-        let extensions = req.extensions().to_owned();
-
-        let resp = self.client.request(req).await.map(|mut resp| {
-            *resp.extensions_mut() = extensions;
-            resp
-        });
-
-        Ok(resp?)
+        self.client
+            .request(self.redirect(req)?)
+            .await
+            .map_err(crate::Error::from)
     }
-}
-
-fn redirect<B>(mut req: Request<B>, new_host: SocketAddr) -> crate::Result<Request<B>> {
-    let p_and_q = req
-        .uri()
-        .path_and_query()
-        .cloned()
-        .unwrap_or(PathAndQuery::from_static("/"));
-
-    let uri = Uri::builder()
-        .scheme(uri::Scheme::HTTP)
-        .authority(new_host.to_string())
-        .path_and_query(p_and_q)
-        .build()?;
-
-    *req.uri_mut() = uri;
-
-    Ok(req)
 }

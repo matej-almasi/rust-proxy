@@ -20,11 +20,7 @@ hyper = { version = "1", features = ["full"] }
 tokio = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
 tower = { version = "0.5.2", features = ["util"] }
-tower-http = { version = "0.6.2", features = [
-    "trace",
-    # "set-header",
-    "add-extension",
-] }
+tower-http = { version = "0.6.2", features = ["trace", "add-extension"] }
 tracing-subscriber = "0.3.19"
 tracing = "0.1.41"
 tracing-appender = "0.2.3"
@@ -39,3 +35,4 @@ httpmock = "0.7.0"
 tempfile = "3.19.1"
 rust-proxy = { path = ".", features = ["test-utils"] }
 regex = "1.11.1"
+tracing-test = { version = "0.2.5", features = ["no-env-filter"] }
