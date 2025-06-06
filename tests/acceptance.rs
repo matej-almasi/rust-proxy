@@ -1,10 +1,13 @@
-use http::Method;
+use bytes::Bytes;
+use http::{Method, Request, Uri};
+use http_body_util::{BodyExt, Full};
+use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 use regex::Regex;
-use rust_proxy::{hyper_client_host::HyperClientHost, test_utils, Proxy};
+use rust_proxy::{hyper_client_host::HyperClientHost, Proxy};
 use tracing_test::traced_test;
 
 #[tokio::test]
-async fn proxy_serves_proxied_content() {
+async fn proxy_serves_proxied_content() -> anyhow::Result<()> {
     let test_answer = "TEST RESPONSE";
 
     let proxied_server = setup_proxied_server(test_answer);
@@ -13,31 +16,40 @@ async fn proxy_serves_proxied_content() {
 
     let proxy = Proxy::builder(remote_host)
         .bind(([127, 0, 0, 1], 0).into())
-        .await
-        .unwrap();
+        .await?;
 
-    let test_address = proxy.local_addr().unwrap();
+    let test_address = proxy.local_addr()?;
 
     tokio::spawn(async {
         proxy.run().await;
     });
 
-    let response_text = test_utils::make_simple_request(format!("http://{test_address}")).await;
+    let mut test_request = Request::<Full<Bytes>>::default();
+    *test_request.uri_mut() = Uri::try_from(format!("http://{test_address}"))?;
+
+    let response = Client::builder(TokioExecutor::new())
+        .build_http()
+        .request(test_request)
+        .await?;
+
+    let response_bytes = response.collect().await?.to_bytes();
+    let response_text = String::from_utf8(response_bytes.into())?;
 
     assert_eq!(response_text, test_answer);
+
+    Ok(())
 }
 
 #[tokio::test]
 #[traced_test]
-async fn proxy_logs_are_captured() {
+async fn proxy_logs_are_captured() -> anyhow::Result<()> {
     let proxied_server = setup_proxied_server("TEST RESPONSE");
 
     let remote_host = HyperClientHost::new(*proxied_server.address());
 
     let proxy = Proxy::builder(remote_host)
         .bind(([127, 0, 0, 1], 0).into())
-        .await
-        .unwrap();
+        .await?;
 
     let test_address = proxy.local_addr().unwrap();
 
@@ -45,7 +57,13 @@ async fn proxy_logs_are_captured() {
         proxy.run().await;
     });
 
-    test_utils::make_simple_request(format!("http://{test_address}")).await;
+    let mut test_request = Request::<Full<Bytes>>::default();
+    *test_request.uri_mut() = Uri::try_from(format!("http://{test_address}"))?;
+
+    Client::builder(TokioExecutor::new())
+        .build_http()
+        .request(test_request)
+        .await?;
 
     let log_pattern = log_regex();
 
@@ -55,6 +73,8 @@ async fn proxy_logs_are_captured() {
             "Log line didn't match expected pattern. Line: \"{line}\". Pattern: \"{log_pattern}\""
         ))
     });
+
+    Ok(())
 }
 
 fn setup_proxied_server(response: &str) -> httpmock::MockServer {
@@ -87,7 +107,7 @@ fn log_regex() -> Regex {
         let version = r"HTTP/(1\.[01]|2\.0|3\.0)";
         let status = r"[1-5]\d\d";
         let body_bytes = r"\d+";
-        format!("\"{method} {p_and_q} {version}\" {status} {body_bytes}")
+        format!("{method} {p_and_q} {version} {status} {body_bytes}")
     };
 
     let referer = r"\S+";

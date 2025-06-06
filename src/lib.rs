@@ -24,6 +24,3 @@ pub trait ThreadSafeError: std::error::Error + Send + Sync + Display {}
 impl ThreadSafeError for hyper::Error {}
 impl ThreadSafeError for crate::Error {}
 impl ThreadSafeError for Infallible {}
-
-#[cfg(feature = "test-utils")]
-pub mod test_utils;
