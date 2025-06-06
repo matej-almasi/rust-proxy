@@ -21,8 +21,7 @@ where
         .body()
         .size_hint()
         .exact()
-        .map(|s| s.to_string())
-        .unwrap_or("UNKNOWN".into());
+        .map_or("UNKNOWN".into(), |s| s.to_string());
 
     let referrer = extract_header_formatted(resp.extensions(), &header::REFERER);
     let user_agent = extract_header_formatted(resp.extensions(), &header::USER_AGENT);
@@ -33,35 +32,33 @@ where
 }
 
 pub(super) fn extract_socket_addr_formatted(ext: &Extensions) -> String {
-    ext.get::<SocketAddr>()
-        .map(|addr| addr.to_string())
-        .unwrap_or_else(|| {
+    ext.get::<SocketAddr>().map_or_else(
+        || {
             tracing::warn!("Couldn't get peer address from response extension.");
             String::from("UNKNOWN")
-        })
+        },
+        ToString::to_string,
+    )
 }
 
 pub(super) fn extract_method_formatted(ext: &Extensions) -> String {
-    ext.get::<http::Method>()
-        .map(|method| method.to_string())
-        .unwrap_or_else(|| {
+    ext.get::<http::Method>().map_or_else(
+        || {
             tracing::warn!("Couldn't get http method for request.");
             String::from("UNKNOWN")
-        })
+        },
+        ToString::to_string,
+    )
 }
 
 pub(super) fn extract_p_and_q_formatted(ext: &Extensions) -> String {
-    ext.get::<Option<PathAndQuery>>()
-        .map(|maybe_pq| {
-            maybe_pq
-                .as_ref()
-                .map(|pq| pq.to_string())
-                .unwrap_or("-".into())
-        })
-        .unwrap_or_else(|| {
+    ext.get::<Option<PathAndQuery>>().map_or_else(
+        || {
             tracing::warn!("Couldn't get http path and query for request.");
             String::from("UNKNOWN")
-        })
+        },
+        |maybe_pq| maybe_pq.as_ref().map_or("-".into(), ToString::to_string),
+    )
 }
 
 pub(super) fn extract_header_formatted(ext: &Extensions, name: &HeaderName) -> String {

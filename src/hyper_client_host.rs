@@ -25,6 +25,7 @@ where
     B::Data: Send,
     B::Error: ThreadSafeError,
 {
+    #[must_use]
     pub fn new(address: SocketAddr) -> Self {
         let client = Client::builder(TokioExecutor::new()).build_http();
         Self { address, client }

@@ -67,7 +67,7 @@ impl<R: RemoteHost> Proxy<R> {
             tokio::spawn(async move {
                 if let Err(e) = http1::Builder::new().serve_connection(io, service).await {
                     tracing::error!("Failed serving peer {}: {e}", peer_addr.ip());
-                };
+                }
             });
         }
     }
@@ -90,7 +90,7 @@ pub trait RemoteHost: Send + Clone + 'static {
 
 fn update_redirected_header<T>(req: Request<T>, local_addr: SocketAddr) -> Request<T> {
     let peer_addr = logging::extract_socket_addr_formatted(req.extensions());
-    let header_entry = format!("by={};for={}", local_addr, peer_addr);
+    let header_entry = format!("by={local_addr};for={peer_addr}");
 
     let mut req = req;
 
@@ -98,14 +98,14 @@ fn update_redirected_header<T>(req: Request<T>, local_addr: SocketAddr) -> Reque
         req.headers_mut().append(header::FORWARDED, val);
     } else {
         tracing::warn!("Couldn't convert to valid HTTP header: {header_entry}");
-    };
+    }
 
     req
 }
 
 fn set_request_extensions<T>(mut req: Request<T>) -> Request<T> {
     let method = req.method().to_owned();
-    let p_and_q = req.uri().path_and_query().map(|v| v.to_owned());
+    let p_and_q = req.uri().path_and_query().map(ToOwned::to_owned);
     let headers = req.headers().to_owned();
 
     req.extensions_mut().insert(method);
@@ -163,7 +163,7 @@ mod test {
             .unwrap()
             .to_str()?;
 
-        let pat = Regex::new(&format!(r"^by={};for=127.0.0.1:\d{{1, 5}}", test_address))?;
+        let pat = Regex::new(&format!(r"^by={test_address};for=127.0.0.1:\d{{1, 5}}"))?;
 
         assert!(
             pat.is_match(header_value),
@@ -247,7 +247,7 @@ mod test {
     #[tokio::test]
     #[traced_test]
     async fn logs_contain_response_size() -> anyhow::Result<()> {
-        let response_size = 1234567;
+        let response_size = 1_234_567;
 
         let remote_host = MockRemoteHost::with_response_size(response_size);
         let test_address = setup_test_proxy(remote_host.clone()).await?;
