@@ -107,8 +107,12 @@ fn update_redirected_header<T>(req: Request<T>, local_addr: SocketAddr) -> Reque
 fn set_request_extensions<T>(mut req: Request<T>) -> Request<T> {
     let method = req.method().to_owned();
     let p_and_q = req.uri().path_and_query().map(|v| v.to_owned());
+    let headers = req.headers().to_owned();
+
     req.extensions_mut().insert(method);
     req.extensions_mut().insert(p_and_q);
+    req.extensions_mut().insert(headers);
+
     req
 }
 
@@ -129,7 +133,9 @@ where
         .map(|s| s.to_string())
         .unwrap_or("UNKNOWN".into());
 
-    tracing::info!("{peer_addr} {method} {p_and_q} {version} {status} {size}");
+    let referrer = extract_referrer_formatted(resp.extensions());
+
+    tracing::info!("{peer_addr} {method} {p_and_q} {version} {status} {size} {referrer}");
 }
 
 fn extract_peer_addr_formatted(ext: &Extensions) -> String {
@@ -162,6 +168,24 @@ fn extract_p_and_q_formatted(ext: &Extensions) -> String {
             tracing::warn!("Couldn't get http path and query for request.");
             String::from("UNKNOWN")
         })
+}
+
+fn extract_referrer_formatted(ext: &Extensions) -> String {
+    let Some(headers) = ext.get::<http::HeaderMap>() else {
+        tracing::warn!("Couldn't get referrer for request.");
+        return String::from("UNKNOWN");
+    };
+
+    let Some(referrer) = headers.get(header::REFERER) else {
+        return String::from(" - ");
+    };
+
+    let Ok(value) = referrer.to_str() else {
+        tracing::warn!("Couldn't parse referrer for request.");
+        return String::from("UNKNOWN");
+    };
+
+    String::from(value)
 }
 
 #[cfg(test)]
@@ -303,6 +327,28 @@ mod test {
         oneshot_request_proxy(uri).await?;
 
         assert!(logs_contain(&response_size.to_string()));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn logs_contain_referrer() -> anyhow::Result<()> {
+        let referrer = "acmecompany.com/referrer";
+
+        let remote_host = MockRemoteHost::default();
+        let test_address = setup_test_proxy(remote_host.clone()).await?;
+
+        let mut test_request = Request::<Full<Bytes>>::default();
+        *test_request.uri_mut() = Uri::try_from(format!("http://{test_address}"))?;
+
+        test_request
+            .headers_mut()
+            .append(header::REFERER, HeaderValue::from_static(referrer));
+
+        test_client().request(test_request).await?;
+
+        assert!(logs_contain(referrer));
 
         Ok(())
     }
