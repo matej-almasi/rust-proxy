@@ -1,8 +1,7 @@
 use std::{io, net::SocketAddr};
 
 use async_trait::async_trait;
-use http::uri::PathAndQuery;
-use http::{header, Extensions, HeaderName, HeaderValue};
+use http::{header, HeaderValue};
 use hyper::body::{Body, Incoming};
 use hyper::Response;
 use hyper::{server::conn::http1, Request};
@@ -35,7 +34,7 @@ impl<R: RemoteHost> Proxy<R> {
         let service = tower::ServiceBuilder::new()
             .map_request(set_request_extensions)
             .map_request(move |req| update_redirected_header(req, local_addr))
-            .layer(TraceLayer::new_for_http().on_response(log_response))
+            .layer(TraceLayer::new_for_http().on_response(logging::log_response))
             .service_fn(move |req: Request<_>| {
                 let host = self.host.clone();
                 let extensions = req.extensions().to_owned();
@@ -90,7 +89,7 @@ pub trait RemoteHost: Send + Clone + 'static {
 }
 
 fn update_redirected_header<T>(req: Request<T>, local_addr: SocketAddr) -> Request<T> {
-    let peer_addr = extract_peer_addr_formatted(req.extensions());
+    let peer_addr = logging::extract_socket_addr_formatted(req.extensions());
     let header_entry = format!("by={};for={}", local_addr, peer_addr);
 
     let mut req = req;
@@ -116,80 +115,7 @@ fn set_request_extensions<T>(mut req: Request<T>) -> Request<T> {
     req
 }
 
-fn log_response<T, U, V>(resp: &Response<T>, _: U, _: &V)
-where
-    T: Body,
-{
-    let peer_addr = extract_peer_addr_formatted(resp.extensions());
-    let method = extract_method_formatted(resp.extensions());
-    let p_and_q = extract_p_and_q_formatted(resp.extensions());
-    let version = "HTTP/2.0";
-    let status = resp.status().as_u16().to_string();
-
-    let size = resp
-        .body()
-        .size_hint()
-        .exact()
-        .map(|s| s.to_string())
-        .unwrap_or("UNKNOWN".into());
-
-    let referrer = extract_header_formatted(resp.extensions(), &header::REFERER);
-    let user_agent = extract_header_formatted(resp.extensions(), &header::USER_AGENT);
-
-    tracing::info!(
-        "{peer_addr} {method} {p_and_q} {version} {status} {size} {referrer} {user_agent}"
-    );
-}
-
-fn extract_peer_addr_formatted(ext: &Extensions) -> String {
-    ext.get::<SocketAddr>()
-        .map(|addr| addr.to_string())
-        .unwrap_or_else(|| {
-            tracing::warn!("Couldn't get peer address from response extension.");
-            String::from("UNKNOWN")
-        })
-}
-
-fn extract_method_formatted(ext: &Extensions) -> String {
-    ext.get::<http::Method>()
-        .map(|method| method.to_string())
-        .unwrap_or_else(|| {
-            tracing::warn!("Couldn't get http method for request.");
-            String::from("UNKNOWN")
-        })
-}
-
-fn extract_p_and_q_formatted(ext: &Extensions) -> String {
-    ext.get::<Option<PathAndQuery>>()
-        .map(|maybe_pq| {
-            maybe_pq
-                .as_ref()
-                .map(|pq| pq.to_string())
-                .unwrap_or_default()
-        })
-        .unwrap_or_else(|| {
-            tracing::warn!("Couldn't get http path and query for request.");
-            String::from("UNKNOWN")
-        })
-}
-
-fn extract_header_formatted(ext: &Extensions, name: &HeaderName) -> String {
-    let Some(headers) = ext.get::<http::HeaderMap>() else {
-        tracing::warn!("Couldn't get headers for request.");
-        return String::from("UNKNOWN");
-    };
-
-    let Some(header) = headers.get(name) else {
-        return String::from(" - ");
-    };
-
-    let Ok(value) = header.to_str() else {
-        tracing::warn!("Couldn't parse {name} for request.");
-        return String::from("UNKNOWN");
-    };
-
-    String::from(value)
-}
+mod logging;
 
 #[cfg(test)]
 mod test {
