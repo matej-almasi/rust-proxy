@@ -2,7 +2,7 @@
 
 - [x] remove all the 'unwrap's
 - [ ] caching
-- [ ] logging
+- [x] logging
 - [ ] http2 support
 - [x] thiserror
 - [ ] graceful shutdown

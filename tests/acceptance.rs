@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use http::{Method, Request, Uri};
+use http::{header, HeaderValue, Method, Request, Uri};
 use http_body_util::{BodyExt, Full};
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 use regex::Regex;
@@ -60,6 +60,14 @@ async fn proxy_logs_are_captured() -> anyhow::Result<()> {
     let mut test_request = Request::<Full<Bytes>>::default();
     *test_request.uri_mut() = Uri::try_from(format!("http://{test_address}"))?;
 
+    test_request
+        .headers_mut()
+        .append(header::REFERER, HeaderValue::from_static("some/referrer"));
+
+    test_request
+        .headers_mut()
+        .append(header::USER_AGENT, HeaderValue::from_static("firefox/1.0"));
+
     Client::builder(TokioExecutor::new())
         .build_http()
         .request(test_request)
@@ -98,7 +106,7 @@ fn log_regex() -> Regex {
 
         let port = r"\d{1, 5}";
 
-        format!("({ipv4_addr}|{ipv6_addr}:{port})")
+        format!("({ipv4_addr}|{ipv6_addr}):{port}")
     };
 
     let response = {
@@ -112,7 +120,7 @@ fn log_regex() -> Regex {
 
     let referer = r"\S+";
 
-    let user_agent = r"S+";
+    let user_agent = r"\S+";
 
     Regex::new(&format!("{peer} {response} {referer} {user_agent}")).unwrap()
 }

@@ -2,7 +2,7 @@ use std::{io, net::SocketAddr};
 
 use async_trait::async_trait;
 use http::uri::PathAndQuery;
-use http::{header, Extensions, HeaderValue};
+use http::{header, Extensions, HeaderName, HeaderValue};
 use hyper::body::{Body, Incoming};
 use hyper::Response;
 use hyper::{server::conn::http1, Request};
@@ -124,7 +124,7 @@ where
     let method = extract_method_formatted(resp.extensions());
     let p_and_q = extract_p_and_q_formatted(resp.extensions());
     let version = "HTTP/2.0";
-    let status = resp.status();
+    let status = resp.status().as_u16().to_string();
 
     let size = resp
         .body()
@@ -133,9 +133,12 @@ where
         .map(|s| s.to_string())
         .unwrap_or("UNKNOWN".into());
 
-    let referrer = extract_referrer_formatted(resp.extensions());
+    let referrer = extract_header_formatted(resp.extensions(), &header::REFERER);
+    let user_agent = extract_header_formatted(resp.extensions(), &header::USER_AGENT);
 
-    tracing::info!("{peer_addr} {method} {p_and_q} {version} {status} {size} {referrer}");
+    tracing::info!(
+        "{peer_addr} {method} {p_and_q} {version} {status} {size} {referrer} {user_agent}"
+    );
 }
 
 fn extract_peer_addr_formatted(ext: &Extensions) -> String {
@@ -170,18 +173,18 @@ fn extract_p_and_q_formatted(ext: &Extensions) -> String {
         })
 }
 
-fn extract_referrer_formatted(ext: &Extensions) -> String {
+fn extract_header_formatted(ext: &Extensions, name: &HeaderName) -> String {
     let Some(headers) = ext.get::<http::HeaderMap>() else {
-        tracing::warn!("Couldn't get referrer for request.");
+        tracing::warn!("Couldn't get headers for request.");
         return String::from("UNKNOWN");
     };
 
-    let Some(referrer) = headers.get(header::REFERER) else {
+    let Some(header) = headers.get(name) else {
         return String::from(" - ");
     };
 
-    let Ok(value) = referrer.to_str() else {
-        tracing::warn!("Couldn't parse referrer for request.");
+    let Ok(value) = header.to_str() else {
+        tracing::warn!("Couldn't parse {name} for request.");
         return String::from("UNKNOWN");
     };
 
@@ -349,6 +352,27 @@ mod test {
         test_client().request(test_request).await?;
 
         assert!(logs_contain(referrer));
+
+        Ok(())
+    }
+    #[tokio::test]
+    #[traced_test]
+    async fn logs_contain_user_agent() -> anyhow::Result<()> {
+        let user_agent = "firefox/1.0";
+
+        let remote_host = MockRemoteHost::default();
+        let test_address = setup_test_proxy(remote_host.clone()).await?;
+
+        let mut test_request = Request::<Full<Bytes>>::default();
+        *test_request.uri_mut() = Uri::try_from(format!("http://{test_address}"))?;
+
+        test_request
+            .headers_mut()
+            .append(header::USER_AGENT, HeaderValue::from_static(user_agent));
+
+        test_client().request(test_request).await?;
+
+        assert!(logs_contain(user_agent));
 
         Ok(())
     }
