@@ -2,8 +2,8 @@
 
 - [x] remove all the 'unwrap's
 - [ ] caching
-- [ ] logging
+- [x] logging
 - [ ] http2 support
-- [x] ~~thiserror~~ anyhow
+- [x] thiserror
 - [ ] graceful shutdown
 - [ ] configure tower layers

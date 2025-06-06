@@ -1,23 +1,23 @@
-use std::env;
+use std::{env, net::SocketAddr, str::FromStr};
 
-use rust_proxy::Proxy;
+use rust_proxy::{hyper_client_host::HyperClientHost, Proxy};
 use tracing_appender::non_blocking::WorkerGuard;
 
 #[tokio::main]
 async fn main() {
-    let args = env::args().collect::<Vec<_>>();
-    let host_address = &args[1];
-
     let _guard = setup_tracing_to_log_file();
 
-    let proxy = Proxy::builder()
-        .bind("127.0.0.1:0", host_address)
-        .await
-        .unwrap_or_else(|e| panic!("Failed to create proxy: {e}"));
+    let args = env::args().collect::<Vec<_>>();
+    let host_address = SocketAddr::from_str(&args[1]).unwrap();
 
-    let test_address = proxy
-        .local_addr()
-        .unwrap_or_else(|e| panic!("Failed to get own address: {e}"));
+    let remote_host = HyperClientHost::new(host_address);
+
+    let proxy = Proxy::builder(remote_host)
+        .bind(([127, 0, 0, 1], 0).into())
+        .await
+        .unwrap();
+
+    let test_address = proxy.local_addr().unwrap();
 
     println!("Listening on {test_address}");
 
@@ -31,6 +31,9 @@ fn setup_tracing_to_log_file() -> WorkerGuard {
     let subscriber = tracing_subscriber::fmt()
         .compact()
         .with_ansi(false)
+        .with_file(false)
+        .with_line_number(false)
+        .with_target(false)
         .with_writer(writer)
         .finish();
 

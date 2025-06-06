@@ -1,71 +1,126 @@
-use std::io::{Read, Seek};
-
-mod utils;
-
-use rust_proxy::proxy::builder::ProxyBuilder;
+use bytes::Bytes;
+use http::{header, HeaderValue, Method, Request, Uri};
+use http_body_util::{BodyExt, Full};
+use hyper_util::{client::legacy::Client, rt::TokioExecutor};
+use regex::Regex;
+use rust_proxy::{hyper_client_host::HyperClientHost, Proxy};
+use tracing_test::traced_test;
 
 #[tokio::test]
-async fn proxy_serves_proxied_content() {
+async fn proxy_serves_proxied_content() -> anyhow::Result<()> {
     let test_answer = "TEST RESPONSE";
 
-    let proxied_server = utils::setup_proxied_server(test_answer);
+    let proxied_server = setup_proxied_server(test_answer);
 
-    let proxy = ProxyBuilder::new()
-        .bind("127.0.0.1:0", proxied_server.address())
-        .await
-        .unwrap();
+    let remote_host = HyperClientHost::new(*proxied_server.address());
 
-    let test_address = proxy.local_addr().unwrap();
+    let proxy = Proxy::builder(remote_host)
+        .bind(([127, 0, 0, 1], 0).into())
+        .await?;
 
-    tokio::spawn(async move {
+    let test_address = proxy.local_addr()?;
+
+    tokio::spawn(async {
         proxy.run().await;
     });
 
-    let response_text = utils::make_simple_request(format!("http://{test_address}")).await;
+    let mut test_request = Request::<Full<Bytes>>::default();
+    *test_request.uri_mut() = Uri::try_from(format!("http://{test_address}"))?;
+
+    let response = Client::builder(TokioExecutor::new())
+        .build_http()
+        .request(test_request)
+        .await?;
+
+    let response_bytes = response.collect().await?.to_bytes();
+    let response_text = String::from_utf8(response_bytes.into())?;
 
     assert_eq!(response_text, test_answer);
+
+    Ok(())
 }
 
 #[tokio::test]
-async fn proxy_logs_are_captured() {
-    let logfile = tempfile::tempfile().unwrap();
-    let mut logfile_reader = logfile.try_clone().unwrap();
+#[traced_test]
+async fn proxy_logs_are_captured() -> anyhow::Result<()> {
+    let proxied_server = setup_proxied_server("TEST RESPONSE");
 
-    {
-        let (writer, _guard) = tracing_appender::non_blocking(logfile);
+    let remote_host = HyperClientHost::new(*proxied_server.address());
 
-        let subscriber = tracing_subscriber::fmt()
-            .compact()
-            .with_ansi(false)
-            .with_writer(writer)
-            .finish();
+    let proxy = Proxy::builder(remote_host)
+        .bind(([127, 0, 0, 1], 0).into())
+        .await?;
 
-        tracing::subscriber::set_global_default(subscriber).unwrap();
+    let test_address = proxy.local_addr().unwrap();
 
-        let test_answer = "TEST RESPONSE";
+    tokio::spawn(async {
+        proxy.run().await;
+    });
 
-        let proxied_server = utils::setup_proxied_server(test_answer);
+    let mut test_request = Request::<Full<Bytes>>::default();
+    *test_request.uri_mut() = Uri::try_from(format!("http://{test_address}"))?;
 
-        let proxy = ProxyBuilder::new()
-            .bind("127.0.0.1:0", *proxied_server.address())
-            .await
-            .unwrap();
+    test_request
+        .headers_mut()
+        .append(header::REFERER, HeaderValue::from_static("some/referrer"));
 
-        let test_address = proxy.local_addr().unwrap();
+    test_request
+        .headers_mut()
+        .append(header::USER_AGENT, HeaderValue::from_static("firefox/1.0"));
 
-        tokio::spawn(async move {
-            proxy.run().await;
-        });
+    Client::builder(TokioExecutor::new())
+        .build_http()
+        .request(test_request)
+        .await?;
 
-        utils::make_simple_request(format!("http://{test_address}")).await;
-    }
+    let log_pattern = log_regex();
 
-    logfile_reader.seek(std::io::SeekFrom::Start(0)).unwrap();
+    logs_assert(|lines: &[&str]| {
+        let line = lines.iter().find(|line| line.contains("INFO")).unwrap();
+        log_pattern.is_match(line).then_some(()).ok_or(format!(
+            "Log line didn't match expected pattern. Line: \"{line}\". Pattern: \"{log_pattern}\""
+        ))
+    });
 
-    let mut log_content = String::new();
-    logfile_reader.read_to_string(&mut log_content).unwrap();
+    Ok(())
+}
 
-    println!("{log_content}");
+fn setup_proxied_server(response: &str) -> httpmock::MockServer {
+    let test_server = httpmock::MockServer::start();
 
-    assert!(log_content.contains("127.0.0.1 -"));
+    test_server.mock(|when, then| {
+        when.method(Method::GET.as_str());
+        then.status(200).body(response);
+    });
+
+    test_server
+}
+
+fn log_regex() -> Regex {
+    let peer = {
+        let ipv4_triplet = r"(2(5[0-5]|[0-4]\d)|1\d\d|\d?\d)";
+        let ipv4_addr = format!("({ipv4_triplet}\\.){{3}}{ipv4_triplet}");
+
+        let ipv6_quartet = r"([\dA-E]{0, 4})";
+        let ipv6_addr = format!("({ipv6_quartet}?:){{1, 7}}{ipv6_quartet}?");
+
+        let port = r"\d{1, 5}";
+
+        format!("({ipv4_addr}|{ipv6_addr}):{port}")
+    };
+
+    let response = {
+        let method = r"(GET|HEAD|POST|PUT|DELETE|CONNECT|OPTIONS|TRACE|PATCH)";
+        let p_and_q = r"/\S*";
+        let version = r"HTTP/(1\.[01]|2\.0|3\.0)";
+        let status = r"[1-5]\d\d";
+        let body_bytes = r"\d+";
+        format!("{method} {p_and_q} {version} {status} {body_bytes}")
+    };
+
+    let referer = r"\S+";
+
+    let user_agent = r"\S+";
+
+    Regex::new(&format!("{peer} {response} {referer} {user_agent}")).unwrap()
 }
