@@ -25,6 +25,11 @@ impl<R: RemoteHost> Proxy<R> {
         ProxyBuilder::new(remote_host)
     }
 
+    /// Run the Proxy
+    ///
+    /// # Panics
+    /// Panics if the local address of the listener is not available. This may
+    /// only occur at startup, before any requests are served.
     pub async fn run(self) {
         let Ok(local_addr) = self.local_addr() else {
             tracing::error!("Local listener address not available! Shutting down...");
@@ -72,6 +77,10 @@ impl<R: RemoteHost> Proxy<R> {
         }
     }
 
+    /// Returns the local address on which the proxy listens.
+    ///
+    /// # Errors
+    /// Returns an error if the local listener address is not available.
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.listener.local_addr()
     }

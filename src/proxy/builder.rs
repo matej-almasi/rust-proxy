@@ -14,6 +14,12 @@ impl<R: RemoteHost> ProxyBuilder<R> {
         Self { remote_host }
     }
 
+    /// Build a proxy, binding it to an address on which it will listen to
+    /// incoming requests.
+    ///
+    /// # Errors
+    /// Returns an error if the provided address can't be bound to (typically
+    /// because it is already used by another process on the machine).
     pub async fn bind(self, listener_addr: SocketAddr) -> crate::Result<Proxy<R>> {
         let listener = TcpListener::bind(listener_addr).await?;
 
