@@ -15,6 +15,8 @@ use crate::ThreadSafeError;
 pub mod builder;
 use builder::ProxyBuilder;
 
+mod logging;
+
 pub struct Proxy<R> {
     listener: TcpListener,
     host: R,
@@ -97,6 +99,18 @@ pub trait RemoteHost: Send + Clone + 'static {
     ) -> Result<Response<Self::ResponseBody>, Self::Error>;
 }
 
+fn set_request_extensions<T>(mut req: Request<T>) -> Request<T> {
+    let method = req.method().to_owned();
+    let p_and_q = req.uri().path_and_query().map(ToOwned::to_owned);
+    let headers = req.headers().to_owned();
+
+    req.extensions_mut().insert(method);
+    req.extensions_mut().insert(p_and_q);
+    req.extensions_mut().insert(headers);
+
+    req
+}
+
 fn update_redirected_header<T>(req: Request<T>, local_addr: SocketAddr) -> Request<T> {
     let peer_addr = logging::extract_socket_addr_formatted(req.extensions());
     let header_entry = format!("by={local_addr};for={peer_addr}");
@@ -111,20 +125,6 @@ fn update_redirected_header<T>(req: Request<T>, local_addr: SocketAddr) -> Reque
 
     req
 }
-
-fn set_request_extensions<T>(mut req: Request<T>) -> Request<T> {
-    let method = req.method().to_owned();
-    let p_and_q = req.uri().path_and_query().map(ToOwned::to_owned);
-    let headers = req.headers().to_owned();
-
-    req.extensions_mut().insert(method);
-    req.extensions_mut().insert(p_and_q);
-    req.extensions_mut().insert(headers);
-
-    req
-}
-
-mod logging;
 
 #[cfg(test)]
 mod test {
