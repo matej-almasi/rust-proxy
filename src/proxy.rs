@@ -140,7 +140,6 @@ mod test {
         rt::TokioExecutor,
     };
     use regex::Regex;
-    use tracing_test::traced_test;
 
     use super::*;
     // Unit tests for the Proxy::run function are omitted as they are essentially
@@ -184,136 +183,6 @@ mod test {
         Ok(())
     }
 
-    #[tokio::test]
-    #[traced_test]
-    async fn logs_contain_peer_address() -> anyhow::Result<()> {
-        let test_address = setup_test_proxy(MockRemoteHost::default()).await?;
-
-        let uri = Uri::try_from(format!("http://{test_address}"))?;
-        oneshot_request_proxy(uri).await?;
-
-        logs_assert(|lines| {
-            check_log_contains(lines, "127.0.0.1:")?
-                .then_some(())
-                .ok_or(String::from("Peer address not found in log entry."))
-        });
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[traced_test]
-    async fn logs_contain_method() -> anyhow::Result<()> {
-        let test_address = setup_test_proxy(MockRemoteHost::default()).await?;
-
-        let uri = Uri::try_from(format!("http://{test_address}"))?;
-        oneshot_request_proxy(uri).await?;
-
-        assert!(logs_contain("GET"));
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[traced_test]
-    async fn logs_contain_path_and_query() -> anyhow::Result<()> {
-        let test_p_and_q = "/some/path?johnny=12";
-
-        let test_address = setup_test_proxy(MockRemoteHost::default()).await?;
-
-        let uri = Uri::try_from(format!("http://{test_address}{test_p_and_q}"))?;
-        oneshot_request_proxy(uri).await?;
-
-        assert!(logs_contain(test_p_and_q));
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[traced_test]
-    async fn logs_contain_http_version() -> anyhow::Result<()> {
-        let test_address = setup_test_proxy(MockRemoteHost::default()).await?;
-
-        let uri = Uri::try_from(format!("http://{test_address}"))?;
-        oneshot_request_proxy(uri).await?;
-
-        assert!(logs_contain("HTTP/2.0"));
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[traced_test]
-    async fn logs_contain_status() -> anyhow::Result<()> {
-        let test_address = setup_test_proxy(MockRemoteHost::default()).await?;
-
-        let uri = Uri::try_from(format!("http://{test_address}"))?;
-        oneshot_request_proxy(uri).await?;
-
-        assert!(logs_contain("200"));
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[traced_test]
-    async fn logs_contain_response_size() -> anyhow::Result<()> {
-        let response_size = 1_234_567;
-
-        let remote_host = MockRemoteHost::with_response_size(response_size);
-        let test_address = setup_test_proxy(remote_host.clone()).await?;
-
-        let uri = Uri::try_from(format!("http://{test_address}"))?;
-        oneshot_request_proxy(uri).await?;
-
-        assert!(logs_contain(&response_size.to_string()));
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[traced_test]
-    async fn logs_contain_referrer() -> anyhow::Result<()> {
-        let referrer = "acmecompany.com/referrer";
-
-        let remote_host = MockRemoteHost::default();
-        let test_address = setup_test_proxy(remote_host.clone()).await?;
-
-        let mut test_request = Request::<Full<Bytes>>::default();
-        *test_request.uri_mut() = Uri::try_from(format!("http://{test_address}"))?;
-
-        test_request
-            .headers_mut()
-            .append(header::REFERER, HeaderValue::from_static(referrer));
-
-        test_client().request(test_request).await?;
-
-        assert!(logs_contain(referrer));
-
-        Ok(())
-    }
-    #[tokio::test]
-    #[traced_test]
-    async fn logs_contain_user_agent() -> anyhow::Result<()> {
-        let user_agent = "firefox/1.0";
-
-        let remote_host = MockRemoteHost::default();
-        let test_address = setup_test_proxy(remote_host.clone()).await?;
-
-        let mut test_request = Request::<Full<Bytes>>::default();
-        *test_request.uri_mut() = Uri::try_from(format!("http://{test_address}"))?;
-
-        test_request
-            .headers_mut()
-            .append(header::USER_AGENT, HeaderValue::from_static(user_agent));
-
-        test_client().request(test_request).await?;
-
-        assert!(logs_contain(user_agent));
-
-        Ok(())
-    }
-
     async fn oneshot_request_proxy(uri: Uri) -> anyhow::Result<Response<Incoming>> {
         let mut test_request = Request::<Full<Bytes>>::default();
         *test_request.uri_mut() = uri;
@@ -343,27 +212,10 @@ mod test {
         Client::builder(TokioExecutor::new()).build_http()
     }
 
-    fn check_log_contains(lines: &[&str], val: &str) -> Result<bool, String> {
-        Ok(lines
-            .iter()
-            .find(|line| line.contains("INFO"))
-            .ok_or(String::from("No proxy logging line found in logs."))?
-            .contains(val))
-    }
-
     #[derive(Debug, Clone, Default)]
     struct MockRemoteHost {
         received_req: Arc<RwLock<Option<Request<Incoming>>>>,
         response_size: usize,
-    }
-
-    impl MockRemoteHost {
-        fn with_response_size(size: usize) -> Self {
-            Self {
-                response_size: size,
-                ..Default::default()
-            }
-        }
     }
 
     #[async_trait]

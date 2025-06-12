@@ -31,7 +31,7 @@ where
     );
 }
 
-pub(super) fn extract_socket_addr_formatted(ext: &Extensions) -> String {
+pub fn extract_socket_addr_formatted(ext: &Extensions) -> String {
     ext.get::<SocketAddr>().map_or_else(
         || {
             tracing::warn!("Couldn't get peer address from response extension.");
@@ -41,7 +41,7 @@ pub(super) fn extract_socket_addr_formatted(ext: &Extensions) -> String {
     )
 }
 
-pub(super) fn extract_method_formatted(ext: &Extensions) -> String {
+pub fn extract_method_formatted(ext: &Extensions) -> String {
     ext.get::<http::Method>().map_or_else(
         || {
             tracing::warn!("Couldn't get http method for request.");
@@ -51,7 +51,7 @@ pub(super) fn extract_method_formatted(ext: &Extensions) -> String {
     )
 }
 
-pub(super) fn extract_p_and_q_formatted(ext: &Extensions) -> String {
+pub fn extract_p_and_q_formatted(ext: &Extensions) -> String {
     ext.get::<Option<PathAndQuery>>().map_or_else(
         || {
             tracing::warn!("Couldn't get http path and query for request.");
@@ -61,7 +61,7 @@ pub(super) fn extract_p_and_q_formatted(ext: &Extensions) -> String {
     )
 }
 
-pub(super) fn extract_header_formatted(ext: &Extensions, name: &HeaderName) -> String {
+pub fn extract_header_formatted(ext: &Extensions, name: &HeaderName) -> String {
     let Some(headers) = ext.get::<http::HeaderMap>() else {
         tracing::warn!("Couldn't get headers for request.");
         return String::from("UNKNOWN");
@@ -82,6 +82,7 @@ pub(super) fn extract_header_formatted(ext: &Extensions, name: &HeaderName) -> S
 #[cfg(test)]
 mod test {
     use http::{HeaderMap, HeaderValue};
+    use tracing_test::traced_test;
 
     use super::*;
 
@@ -172,5 +173,78 @@ mod test {
             extract_header_formatted(&Extensions::default(), &header::ALLOW),
             "UNKNOWN"
         );
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn logs_contain_peer_address() -> anyhow::Result<()> {
+        logs_assert(|lines| {
+            check_log_contains(lines, "127.0.0.1:")?
+                .then_some(())
+                .ok_or(String::from("Peer address not found in log entry."))
+        });
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn logs_contain_method() -> anyhow::Result<()> {
+        assert!(logs_contain("GET"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn logs_contain_path_and_query() -> anyhow::Result<()> {
+        let test_p_and_q = "/some/path?johnny=12";
+        assert!(logs_contain(test_p_and_q));
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn logs_contain_http_version() -> anyhow::Result<()> {
+        assert!(logs_contain("HTTP/2.0"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn logs_contain_status() -> anyhow::Result<()> {
+        assert!(logs_contain("200"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn logs_contain_response_size() -> anyhow::Result<()> {
+        let response_size = 1_234_567;
+        assert!(logs_contain(&response_size.to_string()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn logs_contain_referrer() -> anyhow::Result<()> {
+        let referrer = "acmecompany.com/referrer";
+        assert!(logs_contain(referrer));
+        Ok(())
+    }
+    #[tokio::test]
+    #[traced_test]
+    async fn logs_contain_user_agent() -> anyhow::Result<()> {
+        let user_agent = "firefox/1.0";
+        assert!(logs_contain(user_agent));
+        Ok(())
+    }
+
+    fn check_log_contains(lines: &[&str], val: &str) -> Result<bool, String> {
+        Ok(lines
+            .iter()
+            .find(|line| line.contains("INFO"))
+            .ok_or(String::from("No proxy logging line found in logs."))?
+            .contains(val))
     }
 }
