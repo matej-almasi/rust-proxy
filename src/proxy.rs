@@ -1,21 +1,12 @@
-use std::future::Future;
-use std::pin::Pin;
-use std::task::Poll;
-use std::vec::IntoIter;
 use std::{io, net::SocketAddr};
-use std::{mem, task};
 
 use async_trait::async_trait;
-use dashmap::DashMap;
-use futures::stream::{self, Iter};
-use http::{header, HeaderValue, Uri};
-use http_body_util::StreamBody;
-use hyper::body::{Body, Frame, Incoming};
+use http::{header, HeaderValue};
+use hyper::body::{Body, Incoming};
 use hyper::Response;
 use hyper::{server::conn::http1, Request};
 use hyper_util::{rt::TokioIo, service::TowerToHyperService};
 use tokio::net::TcpListener;
-use tokio::sync::mpsc::{self, UnboundedSender};
 use tower_http::add_extension::AddExtensionLayer;
 use tower_http::trace::TraceLayer;
 
@@ -24,6 +15,7 @@ use crate::ThreadSafeError;
 pub mod builder;
 use builder::ProxyBuilder;
 
+mod caching;
 mod logging;
 
 pub struct Proxy<R> {
@@ -51,7 +43,7 @@ impl<R: RemoteHost> Proxy<R> {
             .map_request(set_request_extensions)
             .layer(TraceLayer::new_for_http().on_response(logging::log_response))
             .map_request(move |req| update_redirected_header(req, local_addr))
-            .layer_fn(CacheService::new)
+            .layer_fn(caching::CacheService::new)
             .service_fn(move |req: Request<_>| {
                 let host = self.host.clone();
                 let extensions = req.extensions().to_owned();
@@ -107,150 +99,6 @@ pub trait RemoteHost: Send + Clone + 'static {
         &self,
         req: Request<Incoming>,
     ) -> Result<Response<Self::ResponseBody>, Self::Error>;
-}
-
-#[derive(Debug, Clone)]
-struct CacheService<S> {
-    inner: S,
-}
-
-impl<S> CacheService<S> {
-    fn new(inner: S) -> Self {
-        Self { inner }
-    }
-}
-
-impl<S, RqB, RsB> tower::Service<Request<RqB>> for CacheService<S>
-where
-    S: tower::Service<Request<RqB>, Response = Response<RsB>> + Send + Clone + 'static,
-    S::Future: Send,
-    S::Response: Send,
-    S::Error: std::error::Error,
-    RqB: Send + 'static,
-    RsB: Body + Send + 'static,
-    RsB::Data: Send + 'static,
-{
-    type Error = S::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
-    type Response = Response<CacheableBody<RsB>>;
-
-    fn poll_ready(&mut self, cx: &mut task::Context<'_>) -> task::Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx)
-    }
-
-    fn call(&mut self, req: Request<RqB>) -> Self::Future {
-        // the clone may not be ready, calling call on it may panic.
-        // Therefore, we have to use the original service (which is guaranteed
-        // to be ready if the user called poll_ready).
-        let inner = self.inner.clone();
-        let mut inner = mem::replace(&mut self.inner, inner);
-
-        let fut = async move {
-            let cache = DashMap::<Uri, Response<CacheableBody<RsB>>>::new();
-            let uri = req.uri().to_owned();
-
-            let (parts, body) = inner.call(req).await?.into_parts();
-
-            let (tx, mut rx) = mpsc::unbounded_channel();
-
-            let cached_parts = parts.clone();
-
-            tokio::spawn(async move {
-                let mut frames = Vec::new();
-
-                while let Some(frame) = rx.recv().await {
-                    frames.push(frame);
-                }
-
-                let body = CacheableBody::CachedBody {
-                    inner: StreamBody::new(stream::iter(frames)),
-                };
-
-                cache.insert(uri, Response::from_parts(cached_parts, body));
-            });
-
-            let caching_body = CacheableBody::CachingBody {
-                inner: body,
-                cache_tx: tx,
-            };
-
-            Ok(Response::from_parts(parts, caching_body))
-        };
-
-        Box::pin(fut)
-    }
-}
-
-type ResultFrame<D> = crate::Result<Frame<D>>;
-
-enum CacheableBody<B: Body> {
-    CachedBody {
-        inner: StreamBody<Iter<IntoIter<ResultFrame<B::Data>>>>,
-    },
-
-    CachingBody {
-        inner: B,
-        cache_tx: UnboundedSender<ResultFrame<B::Data>>,
-    },
-}
-
-impl<B> Body for CacheableBody<B>
-where
-    B: Body + Unpin,
-    B::Data: Clone,
-{
-    type Data = B::Data;
-    type Error = crate::Error;
-
-    fn is_end_stream(&self) -> bool {
-        match self {
-            Self::CachingBody { inner, .. } => inner.is_end_stream(),
-            Self::CachedBody { inner } => inner.is_end_stream(),
-        }
-    }
-
-    fn size_hint(&self) -> hyper::body::SizeHint {
-        match self {
-            Self::CachingBody { inner, .. } => inner.size_hint(),
-            Self::CachedBody { inner } => inner.size_hint(),
-        }
-    }
-
-    fn poll_frame(
-        mut self: Pin<&mut Self>,
-        cx: &mut task::Context<'_>,
-    ) -> task::Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
-        match *self {
-            Self::CachedBody { ref mut inner } => Pin::new(inner).poll_frame(cx),
-            Self::CachingBody {
-                ref mut inner,
-                ref cache_tx,
-            } => {
-                let poll = Pin::new(inner)
-                    .poll_frame(cx)
-                    .map_err(|_| crate::Error::CachingError);
-
-                if let Poll::Ready(Some(ref frame)) = &poll {
-                    let frame = frame
-                        .as_ref()
-                        .map(|frame| {
-                            if frame.is_data() {
-                                Frame::data(frame.data_ref().unwrap().clone())
-                            } else {
-                                Frame::trailers(frame.trailers_ref().unwrap().clone())
-                            }
-                        })
-                        .map_err(|_| crate::Error::CachingError);
-
-                    if let Err(e) = cache_tx.send(frame) {
-                        tracing::warn!("Couldn't send cache body: {e}");
-                    };
-                }
-
-                poll
-            }
-        }
-    }
 }
 
 fn set_request_extensions<T>(mut req: Request<T>) -> Request<T> {
