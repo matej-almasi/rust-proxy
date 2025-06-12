@@ -17,6 +17,9 @@ pub enum Error {
 
     #[error("Socket Error")]
     SocketError(#[from] std::io::Error),
+
+    #[error("Caching Error")]
+    CachingError,
 }
 
 pub type Result<T> = std::result::Result<T, crate::Error>;

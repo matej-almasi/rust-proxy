@@ -1,12 +1,23 @@
+use std::error::Error;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::Poll;
+use std::vec::IntoIter;
 use std::{io, net::SocketAddr};
+use std::{mem, task};
 
 use async_trait::async_trait;
-use http::{header, HeaderValue};
-use hyper::body::{Body, Incoming};
+use bytes::Bytes;
+use dashmap::DashMap;
+use futures::stream::{self, Iter};
+use http::{header, HeaderValue, Uri};
+use http_body_util::{BodyStream, StreamBody};
+use hyper::body::{Body, Frame, Incoming};
 use hyper::Response;
 use hyper::{server::conn::http1, Request};
 use hyper_util::{rt::TokioIo, service::TowerToHyperService};
 use tokio::net::TcpListener;
+use tokio::sync::mpsc::{self, UnboundedSender};
 use tower_http::add_extension::AddExtensionLayer;
 use tower_http::trace::TraceLayer;
 
@@ -40,8 +51,9 @@ impl<R: RemoteHost> Proxy<R> {
 
         let service = tower::ServiceBuilder::new()
             .map_request(set_request_extensions)
-            .map_request(move |req| update_redirected_header(req, local_addr))
             .layer(TraceLayer::new_for_http().on_response(logging::log_response))
+            .map_request(move |req| update_redirected_header(req, local_addr))
+            .layer_fn(CacheService::new)
             .service_fn(move |req: Request<_>| {
                 let host = self.host.clone();
                 let extensions = req.extensions().to_owned();
@@ -91,12 +103,155 @@ impl<R: RemoteHost> Proxy<R> {
 #[async_trait]
 pub trait RemoteHost: Send + Clone + 'static {
     type Error: ThreadSafeError;
-    type ResponseBody: Body<Data: Send, Error: ThreadSafeError> + Send;
+    type ResponseBody: Body<Data: Send + Clone, Error: ThreadSafeError> + Send + Unpin;
 
     async fn pass_request(
         &self,
         req: Request<Incoming>,
     ) -> Result<Response<Self::ResponseBody>, Self::Error>;
+}
+
+#[derive(Debug, Clone)]
+struct CacheService<S> {
+    inner: S,
+}
+
+impl<S> CacheService<S> {
+    fn new(inner: S) -> Self {
+        Self { inner }
+    }
+}
+
+impl<S, RqB, RsB> tower::Service<Request<RqB>> for CacheService<S>
+where
+    S: tower::Service<Request<RqB>, Response = Response<RsB>> + Send + Clone + 'static,
+    S::Future: Send,
+    S::Response: Send,
+    S::Error: std::error::Error,
+    RqB: Send + 'static,
+    RsB: Body + Send + 'static,
+    RsB::Data: Send + 'static,
+{
+    type Error = S::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    type Response = Response<CachableBody<RsB>>;
+
+    fn poll_ready(&mut self, cx: &mut task::Context<'_>) -> task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: Request<RqB>) -> Self::Future {
+        // the clone may not be ready, calling call on it may panic.
+        // Therefore, we have to use the original service (which is guaranteed
+        // to be ready if the user called poll_ready).
+        let inner = self.inner.clone();
+        let mut inner = mem::replace(&mut self.inner, inner);
+
+        let fut = async move {
+            let cache = DashMap::<Uri, Response<CachableBody<RsB>>>::new();
+            let uri = req.uri().to_owned();
+
+            let (parts, body) = inner.call(req).await?.into_parts();
+
+            let (tx, mut rx) = mpsc::unbounded_channel();
+
+            let cached_parts = parts.clone();
+
+            let caching_body = CachableBody::CachingBody {
+                inner: body,
+                cache_tx: tx,
+            };
+
+            tokio::spawn(async move {
+                let mut frames = Vec::new();
+
+                while let Some(frame) = rx.recv().await {
+                    frames.push(frame);
+                }
+
+                let sb = StreamBody::new(stream::iter(frames));
+                let cb = CachableBody::CachedBody { inner: sb };
+                let resp: Response<CachableBody<RsB>> = Response::from_parts(cached_parts, cb);
+
+                cache.insert(uri, resp);
+            });
+            // let headers = response.headers().clone();
+            // response.extensions().clone();
+            // let x = response.collect().await.unwrap();
+            Ok(Response::from_parts(parts, caching_body))
+        };
+
+        Box::pin(fut)
+    }
+}
+
+enum CachableBody<B: Body> {
+    CachedBody {
+        inner: StreamBody<Iter<IntoIter<Result<Frame<B::Data>, crate::Error>>>>,
+    },
+    CachingBody {
+        inner: B,
+        cache_tx: UnboundedSender<Result<Frame<B::Data>, crate::Error>>,
+    },
+}
+
+impl<B> Body for CachableBody<B>
+where
+    B: Body + Unpin,
+    B::Data: Clone,
+{
+    type Data = B::Data;
+    type Error = crate::Error;
+
+    fn is_end_stream(&self) -> bool {
+        match self {
+            Self::CachingBody { inner, cache_tx: _ } => inner.is_end_stream(),
+            Self::CachedBody { inner } => inner.is_end_stream(),
+        }
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        match self {
+            Self::CachingBody { inner, cache_tx: _ } => inner.size_hint(),
+            Self::CachedBody { inner } => inner.size_hint(),
+        }
+    }
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+    ) -> task::Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
+        match *self {
+            Self::CachedBody { ref mut inner } => Pin::new(inner).poll_frame(cx),
+            Self::CachingBody {
+                ref mut inner,
+                ref cache_tx,
+            } => {
+                // let bs = BodyStream::
+                // let bs
+                let poll = Pin::new(inner)
+                    .poll_frame(cx)
+                    .map_err(|_| crate::Error::CachingError);
+
+                if let Poll::Ready(Some(ref frame)) = &poll {
+                    let frame = frame
+                        .as_ref()
+                        .map(|frame| {
+                            if frame.is_data() {
+                                Frame::data(frame.data_ref().unwrap().clone())
+                            } else {
+                                Frame::trailers(frame.trailers_ref().unwrap().clone())
+                            }
+                        })
+                        .map_err(|_| crate::Error::CachingError);
+
+                    cache_tx.send(frame);
+                }
+
+                poll
+            }
+        }
+    }
 }
 
 fn set_request_extensions<T>(mut req: Request<T>) -> Request<T> {
