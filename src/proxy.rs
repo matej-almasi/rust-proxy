@@ -1,4 +1,3 @@
-use std::error::Error;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::Poll;
@@ -7,11 +6,10 @@ use std::{io, net::SocketAddr};
 use std::{mem, task};
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use dashmap::DashMap;
 use futures::stream::{self, Iter};
 use http::{header, HeaderValue, Uri};
-use http_body_util::{BodyStream, StreamBody};
+use http_body_util::StreamBody;
 use hyper::body::{Body, Frame, Incoming};
 use hyper::Response;
 use hyper::{server::conn::http1, Request};
@@ -134,7 +132,7 @@ where
 {
     type Error = S::Error;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
-    type Response = Response<CachableBody<RsB>>;
+    type Response = Response<CacheableBody<RsB>>;
 
     fn poll_ready(&mut self, cx: &mut task::Context<'_>) -> task::Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
@@ -148,7 +146,7 @@ where
         let mut inner = mem::replace(&mut self.inner, inner);
 
         let fut = async move {
-            let cache = DashMap::<Uri, Response<CachableBody<RsB>>>::new();
+            let cache = DashMap::<Uri, Response<CacheableBody<RsB>>>::new();
             let uri = req.uri().to_owned();
 
             let (parts, body) = inner.call(req).await?.into_parts();
@@ -157,11 +155,6 @@ where
 
             let cached_parts = parts.clone();
 
-            let caching_body = CachableBody::CachingBody {
-                inner: body,
-                cache_tx: tx,
-            };
-
             tokio::spawn(async move {
                 let mut frames = Vec::new();
 
@@ -169,15 +162,18 @@ where
                     frames.push(frame);
                 }
 
-                let sb = StreamBody::new(stream::iter(frames));
-                let cb = CachableBody::CachedBody { inner: sb };
-                let resp: Response<CachableBody<RsB>> = Response::from_parts(cached_parts, cb);
+                let body = CacheableBody::CachedBody {
+                    inner: StreamBody::new(stream::iter(frames)),
+                };
 
-                cache.insert(uri, resp);
+                cache.insert(uri, Response::from_parts(cached_parts, body));
             });
-            // let headers = response.headers().clone();
-            // response.extensions().clone();
-            // let x = response.collect().await.unwrap();
+
+            let caching_body = CacheableBody::CachingBody {
+                inner: body,
+                cache_tx: tx,
+            };
+
             Ok(Response::from_parts(parts, caching_body))
         };
 
@@ -185,17 +181,20 @@ where
     }
 }
 
-enum CachableBody<B: Body> {
+type ResultFrame<D> = crate::Result<Frame<D>>;
+
+enum CacheableBody<B: Body> {
     CachedBody {
-        inner: StreamBody<Iter<IntoIter<Result<Frame<B::Data>, crate::Error>>>>,
+        inner: StreamBody<Iter<IntoIter<ResultFrame<B::Data>>>>,
     },
+
     CachingBody {
         inner: B,
-        cache_tx: UnboundedSender<Result<Frame<B::Data>, crate::Error>>,
+        cache_tx: UnboundedSender<ResultFrame<B::Data>>,
     },
 }
 
-impl<B> Body for CachableBody<B>
+impl<B> Body for CacheableBody<B>
 where
     B: Body + Unpin,
     B::Data: Clone,
@@ -205,14 +204,14 @@ where
 
     fn is_end_stream(&self) -> bool {
         match self {
-            Self::CachingBody { inner, cache_tx: _ } => inner.is_end_stream(),
+            Self::CachingBody { inner, .. } => inner.is_end_stream(),
             Self::CachedBody { inner } => inner.is_end_stream(),
         }
     }
 
     fn size_hint(&self) -> hyper::body::SizeHint {
         match self {
-            Self::CachingBody { inner, cache_tx: _ } => inner.size_hint(),
+            Self::CachingBody { inner, .. } => inner.size_hint(),
             Self::CachedBody { inner } => inner.size_hint(),
         }
     }
@@ -227,8 +226,6 @@ where
                 ref mut inner,
                 ref cache_tx,
             } => {
-                // let bs = BodyStream::
-                // let bs
                 let poll = Pin::new(inner)
                     .poll_frame(cx)
                     .map_err(|_| crate::Error::CachingError);
@@ -245,7 +242,9 @@ where
                         })
                         .map_err(|_| crate::Error::CachingError);
 
-                    cache_tx.send(frame);
+                    if let Err(e) = cache_tx.send(frame) {
+                        tracing::warn!("Couldn't send cache body: {e}");
+                    };
                 }
 
                 poll
