@@ -1,5 +1,3 @@
-use std::net::SocketAddr;
-
 use http::header;
 use http::uri::PathAndQuery;
 use http::Extensions;
@@ -7,11 +5,11 @@ use http::HeaderName;
 use hyper::body::Body;
 use hyper::Response;
 
-pub(super) fn log_response<T, U, V>(resp: &Response<T>, _: U, _: &V)
+pub(super) fn log_response<T>(resp: &Response<T>)
 where
     T: Body,
 {
-    let peer_addr = extract_socket_addr_formatted(resp.extensions());
+    let peer_addr = super::extract_socket_addr_formatted(resp.extensions());
     let method = extract_method_formatted(resp.extensions());
     let p_and_q = extract_p_and_q_formatted(resp.extensions());
     let version = "HTTP/2.0";
@@ -31,16 +29,6 @@ where
     );
 }
 
-pub fn extract_socket_addr_formatted(ext: &Extensions) -> String {
-    ext.get::<SocketAddr>().map_or_else(
-        || {
-            tracing::warn!("Couldn't get peer address from response extension.");
-            String::from("UNKNOWN")
-        },
-        ToString::to_string,
-    )
-}
-
 pub fn extract_method_formatted(ext: &Extensions) -> String {
     ext.get::<http::Method>().map_or_else(
         || {
@@ -51,7 +39,7 @@ pub fn extract_method_formatted(ext: &Extensions) -> String {
     )
 }
 
-pub fn extract_p_and_q_formatted(ext: &Extensions) -> String {
+fn extract_p_and_q_formatted(ext: &Extensions) -> String {
     ext.get::<Option<PathAndQuery>>().map_or_else(
         || {
             tracing::warn!("Couldn't get http path and query for request.");
@@ -61,7 +49,7 @@ pub fn extract_p_and_q_formatted(ext: &Extensions) -> String {
     )
 }
 
-pub fn extract_header_formatted(ext: &Extensions, name: &HeaderName) -> String {
+fn extract_header_formatted(ext: &Extensions, name: &HeaderName) -> String {
     let Some(headers) = ext.get::<http::HeaderMap>() else {
         tracing::warn!("Couldn't get headers for request.");
         return String::from("UNKNOWN");
@@ -81,163 +69,132 @@ pub fn extract_header_formatted(ext: &Extensions, name: &HeaderName) -> String {
 
 #[cfg(test)]
 mod test {
-    use http::{HeaderMap, HeaderValue};
+    use std::net::SocketAddr;
+
+    use bytes::Bytes;
+    use http::{status, HeaderMap, HeaderValue};
+    use http_body_util::{Empty, Full};
     use tracing_test::traced_test;
 
     use super::*;
 
-    #[test]
-    fn test_extract_existing_socket_address() {
-        let addr = SocketAddr::from(([111, 222, 133, 144], 155));
-
-        let mut ext = Extensions::new();
-        ext.insert(addr);
-
-        assert_eq!(extract_socket_addr_formatted(&ext), addr.to_string());
-    }
-
-    #[test]
-    fn test_extract_nonexistent_socket_address() {
-        assert_eq!(
-            extract_socket_addr_formatted(&Extensions::default()),
-            "UNKNOWN"
-        );
-    }
-
-    #[test]
-    fn test_extract_existing_method_formatted() {
-        let method = http::Method::PATCH;
-
-        let mut ext = Extensions::new();
-        ext.insert(method.clone());
-
-        assert_eq!(extract_method_formatted(&ext), method.to_string());
-    }
-
-    #[test]
-    fn test_extract_nonexistent_method() {
-        assert_eq!(extract_method_formatted(&Extensions::default()), "UNKNOWN");
-    }
-
-    #[test]
-    fn test_extract_existing_p_and_q_formatted() {
-        let p_and_q = PathAndQuery::from_static("path/and?query=val");
-
-        let mut ext = Extensions::new();
-        ext.insert(Some(p_and_q.clone()));
-
-        assert_eq!(extract_p_and_q_formatted(&ext), p_and_q.to_string());
-    }
-
-    #[test]
-    fn test_extract_empty_p_and_q_formatted() {
-        let mut ext = Extensions::new();
-        ext.insert(None::<PathAndQuery>);
-
-        assert_eq!(extract_p_and_q_formatted(&ext), "-");
-    }
-
-    #[test]
-    fn test_extract_nonexistent_p_and_q() {
-        assert_eq!(extract_p_and_q_formatted(&Extensions::default()), "UNKNOWN");
-    }
-
-    #[test]
-    fn test_extract_existing_header_formatted() {
-        let header_name = header::CONTENT_LANGUAGE;
-        let header_val = "SK-sk";
-
-        let mut headers = HeaderMap::new();
-        headers.insert(&header_name, HeaderValue::from_static(header_val));
-
-        let mut ext = Extensions::new();
-        ext.insert(headers);
-
-        assert_eq!(
-            extract_header_formatted(&ext, &header_name),
-            header_val.to_string()
-        );
-    }
-
-    #[test]
-    fn test_extract_empty_header_formatted() {
-        let mut ext = Extensions::new();
-        ext.insert(HeaderMap::new());
-
-        assert_eq!(extract_header_formatted(&ext, &header::COOKIE), "-");
-    }
-
-    #[test]
-    fn test_extract_nonexistent_headers() {
-        assert_eq!(
-            extract_header_formatted(&Extensions::default(), &header::ALLOW),
-            "UNKNOWN"
-        );
-    }
-
     #[tokio::test]
     #[traced_test]
-    async fn logs_contain_peer_address() -> anyhow::Result<()> {
+    async fn logs_contain_peer_address() {
+        let peer = SocketAddr::new([123, 0, 255, 145].into(), 123);
+
+        let resp = Response::builder()
+            .extension(peer)
+            .body(Empty::<Bytes>::new())
+            .unwrap();
+
+        log_response(&resp);
+
         logs_assert(|lines| {
-            check_log_contains(lines, "127.0.0.1:")?
+            check_log_contains(lines, &peer.to_string())?
                 .then_some(())
                 .ok_or(String::from("Peer address not found in log entry."))
         });
-
-        Ok(())
     }
 
     #[tokio::test]
     #[traced_test]
-    async fn logs_contain_method() -> anyhow::Result<()> {
-        assert!(logs_contain("GET"));
+    async fn logs_contain_method() {
+        let method = http::Method::OPTIONS;
 
-        Ok(())
+        let resp = Response::builder()
+            .extension(method.clone())
+            .body(Empty::<Bytes>::new())
+            .unwrap();
+
+        log_response(&resp);
+
+        assert!(logs_contain(method.as_str()));
     }
 
     #[tokio::test]
     #[traced_test]
-    async fn logs_contain_path_and_query() -> anyhow::Result<()> {
-        let test_p_and_q = "/some/path?johnny=12";
-        assert!(logs_contain(test_p_and_q));
-        Ok(())
+    async fn logs_contain_path_and_query() {
+        let test_p_and_q = PathAndQuery::from_static("/some/path?johnny=12");
+
+        let resp = Response::builder()
+            .extension(Some(test_p_and_q.clone()))
+            .body(Empty::<Bytes>::new())
+            .unwrap();
+
+        log_response(&resp);
+
+        assert!(logs_contain(test_p_and_q.as_str()));
     }
 
     #[tokio::test]
     #[traced_test]
-    async fn logs_contain_http_version() -> anyhow::Result<()> {
+    async fn logs_contain_http_version() {
+        log_response(&Response::new(Empty::<Bytes>::new()));
         assert!(logs_contain("HTTP/2.0"));
-        Ok(())
     }
 
     #[tokio::test]
     #[traced_test]
-    async fn logs_contain_status() -> anyhow::Result<()> {
-        assert!(logs_contain("200"));
-        Ok(())
+    async fn logs_contain_status() {
+        let status = status::StatusCode::PERMANENT_REDIRECT;
+
+        let resp = Response::builder()
+            .status(status)
+            .body(Empty::<Bytes>::new())
+            .unwrap();
+
+        log_response(&resp);
+
+        assert!(logs_contain(status.as_str()));
     }
 
     #[tokio::test]
     #[traced_test]
-    async fn logs_contain_response_size() -> anyhow::Result<()> {
-        let response_size = 1_234_567;
-        assert!(logs_contain(&response_size.to_string()));
-        Ok(())
+    async fn logs_contain_response_size() {
+        let size = 256;
+
+        let resp = Response::new(Full::new(Bytes::from_owner(vec![0; size])));
+
+        log_response(&resp);
+
+        assert!(logs_contain(&size.to_string()));
     }
 
     #[tokio::test]
     #[traced_test]
-    async fn logs_contain_referrer() -> anyhow::Result<()> {
+    async fn logs_contain_referrer() {
         let referrer = "acmecompany.com/referrer";
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::REFERER, HeaderValue::from_static(referrer));
+
+        let resp = Response::builder()
+            .extension(headers)
+            .body(Empty::<Bytes>::new())
+            .unwrap();
+
+        log_response(&resp);
+
         assert!(logs_contain(referrer));
-        Ok(())
     }
+
     #[tokio::test]
     #[traced_test]
-    async fn logs_contain_user_agent() -> anyhow::Result<()> {
+    async fn logs_contain_user_agent() {
         let user_agent = "firefox/1.0";
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::USER_AGENT, HeaderValue::from_static(user_agent));
+
+        let resp = Response::builder()
+            .extension(headers)
+            .body(Empty::<Bytes>::new())
+            .unwrap();
+
+        log_response(&resp);
+
         assert!(logs_contain(user_agent));
-        Ok(())
     }
 
     fn check_log_contains(lines: &[&str], val: &str) -> Result<bool, String> {

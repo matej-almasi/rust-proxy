@@ -39,9 +39,11 @@ impl<R: RemoteHost> Proxy<R> {
             panic!()
         };
 
+        let log_on_response = |res: &'_ _, _, _: &'_ _| logging::log_response(res);
+
         let service = tower::ServiceBuilder::new()
             .map_request(set_request_extensions)
-            .layer(TraceLayer::new_for_http().on_response(logging::log_response))
+            .layer(TraceLayer::new_for_http().on_response(log_on_response))
             .map_request(move |req| update_redirected_header(req, local_addr))
             .layer_fn(caching::CacheService::new)
             .service_fn(move |req: Request<_>| {
@@ -114,7 +116,7 @@ fn set_request_extensions<T>(mut req: Request<T>) -> Request<T> {
 }
 
 fn update_redirected_header<T>(req: Request<T>, local_addr: SocketAddr) -> Request<T> {
-    let peer_addr = logging::extract_socket_addr_formatted(req.extensions());
+    let peer_addr = extract_socket_addr_formatted(req.extensions());
     let header_entry = format!("by={local_addr};for={peer_addr}");
 
     let mut req = req;
@@ -126,6 +128,16 @@ fn update_redirected_header<T>(req: Request<T>, local_addr: SocketAddr) -> Reque
     }
 
     req
+}
+
+fn extract_socket_addr_formatted(ext: &http::Extensions) -> String {
+    ext.get::<SocketAddr>().map_or_else(
+        || {
+            tracing::warn!("Couldn't get peer address from response extension.");
+            String::from("UNKNOWN")
+        },
+        ToString::to_string,
+    )
 }
 
 #[cfg(test)]
@@ -181,6 +193,24 @@ mod test {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn test_extract_existing_socket_address() {
+        let addr = SocketAddr::from(([111, 222, 133, 144], 155));
+
+        let mut ext = http::Extensions::new();
+        ext.insert(addr);
+
+        assert_eq!(extract_socket_addr_formatted(&ext), addr.to_string());
+    }
+
+    #[test]
+    fn test_extract_nonexistent_socket_address() {
+        assert_eq!(
+            extract_socket_addr_formatted(&http::Extensions::default()),
+            "UNKNOWN"
+        );
     }
 
     async fn oneshot_request_proxy(uri: Uri) -> anyhow::Result<Response<Incoming>> {
